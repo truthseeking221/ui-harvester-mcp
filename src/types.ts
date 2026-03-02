@@ -1,12 +1,12 @@
-export type ThemeMode = "light" | "dark" | "auto";
+export type ThemeMode = 'light' | 'dark' | 'auto';
 
-export type CleaningProfile = "high" | "balanced" | "minimal";
+export type CleaningProfile = 'high' | 'balanced' | 'minimal';
 
-export type IconCaptureProfile = "all" | "selected" | "favicon-only";
+export type IconCaptureProfile = 'all' | 'selected' | 'favicon-only';
 
-export type IconCaptureStatus = "captured" | "skipped" | "failed";
+export type IconCaptureStatus = 'captured' | 'skipped' | 'failed';
 
-export type ThemeExactnessMode = "observed-only" | "observed-with-warned-fallback";
+export type ThemeExactnessMode = 'observed-only' | 'observed-with-warned-fallback';
 
 export type ViewportSpec = {
   name: string;
@@ -16,16 +16,16 @@ export type ViewportSpec = {
 };
 
 export type InteractionState =
-  | "default"
-  | "hover"
-  | "focus"
-  | "active"
-  | "checked"
-  | "selected"
-  | "disabled"
-  | "open"
-  | "loading"
-  | "error";
+  | 'default'
+  | 'hover'
+  | 'focus'
+  | 'active'
+  | 'checked'
+  | 'selected'
+  | 'disabled'
+  | 'open'
+  | 'loading'
+  | 'error';
 
 export type WaitConfig = {
   networkQuietMs?: number;
@@ -52,15 +52,15 @@ export type ExtractDesignSystemInput = {
 };
 
 export type SnapshotExportFormat =
-  | "css-vars"
-  | "tailwind-v4"
-  | "dtcg-json"
-  | "theme-object"
-  | "figma-variables"
-  | "figma-styles"
-  | "figma-console-plan"
-  | "universal-package"
-  | "figma-package";
+  | 'css-vars'
+  | 'tailwind-v4'
+  | 'dtcg-json'
+  | 'theme-object'
+  | 'figma-variables'
+  | 'figma-styles'
+  | 'figma-console-plan'
+  | 'universal-package'
+  | 'figma-package';
 
 export type SnapshotExportArtifact = {
   path: string;
@@ -69,7 +69,7 @@ export type SnapshotExportArtifact = {
 };
 
 export type UniversalPackageManifest = {
-  schemaVersion: "universal-package/1.2.0";
+  schemaVersion: 'universal-package/1.2.0';
   snapshotId: string;
   sourceUrl: string;
   generatedAt: string;
@@ -78,7 +78,14 @@ export type UniversalPackageManifest = {
   files: SnapshotExportArtifact[];
 };
 
-export type SnapshotTargetStack = "next-tailwind" | "vite-tailwind" | "mui" | "chakra" | "styled-components" | "css-modules" | "generic";
+export type SnapshotTargetStack =
+  | 'next-tailwind'
+  | 'vite-tailwind'
+  | 'mui'
+  | 'chakra'
+  | 'styled-components'
+  | 'css-modules'
+  | 'generic';
 
 export type ExportComponentRecipesInput = {
   snapshotId: string;
@@ -189,7 +196,7 @@ export type CollectedIconAsset = {
   retries: number;
   error: string | null;
   fromRoute: string;
-  fromContext: "dom-link" | "manifest" | "img" | "css-inline" | "css-stylesheet";
+  fromContext: 'dom-link' | 'manifest' | 'img' | 'css-inline' | 'css-stylesheet';
   capturedAt: string;
   sha256: string | null;
   sourcePage?: string;
@@ -359,7 +366,7 @@ export type SemanticTokenBucket = {
 export type BreakpointToken = {
   name: string;
   width: number;
-  source: "observed" | "interpolated";
+  source: 'observed' | 'interpolated';
 };
 
 export type ComponentVariantState = {
@@ -414,14 +421,14 @@ export type ValidationItem = {
   diffScreenshot: string | null;
   matched: boolean;
   failureReason?:
-    | "missing_source_screenshot"
-    | "target_interaction_not_reproducible"
-    | "viewport_drift"
-    | "route_not_crawled_in_state"
-    | "state_capture_missing"
-    | "state_capture_fallback"
-    | "selector_not_reproducible"
-    | "missing_target_screenshot";
+    | 'missing_source_screenshot'
+    | 'target_interaction_not_reproducible'
+    | 'viewport_drift'
+    | 'route_not_crawled_in_state'
+    | 'state_capture_missing'
+    | 'state_capture_fallback'
+    | 'selector_not_reproducible'
+    | 'missing_target_screenshot';
   error?: string;
   sourceViewport?: string;
   targetViewport?: string;
@@ -431,7 +438,7 @@ export type ValidationItem = {
 };
 
 export type ValidationReport = {
-  status: "unknown" | "ok" | "needs_fix";
+  status: 'unknown' | 'ok' | 'needs_fix';
   overallScore: number;
   summary: {
     routeCount: number;
@@ -475,8 +482,8 @@ export type CleaningProfileReport = {
 };
 
 export type UiSnapshotManifest = {
-  manifestVersion: "1.2.0";
-  schemaVersion?: "1.2.0";
+  manifestVersion: '1.2.0';
+  schemaVersion?: '1.2.0';
   snapshotId: string;
   sourceUrl: string;
   createdAt: string;
