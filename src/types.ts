@@ -214,6 +214,7 @@ export type StateCaptureTargetMeta = {
   found: boolean;
   strategy: string;
   attempts: string[];
+  id?: string;
   resolved?: {
     found: boolean;
     strategy: string;
@@ -289,6 +290,14 @@ export type RouteViewportCapture = {
   stateCaptureBudget?: number;
   routeFingerprint?: string;
   routeSignature?: string;
+};
+
+export type SnapshotGeneratedArtifact = {
+  generatedAt: string;
+  files: SnapshotExportArtifact[];
+  schemaVersion?: string;
+  schema?: string;
+  warnings?: string[];
 };
 
 export type DesignToken = { name: string; value: string; count: number; provenance: Array<string> };
@@ -410,6 +419,7 @@ export type ValidationItem = {
     | "viewport_drift"
     | "route_not_crawled_in_state"
     | "state_capture_missing"
+    | "state_capture_fallback"
     | "selector_not_reproducible"
     | "missing_target_screenshot";
   error?: string;
@@ -497,12 +507,7 @@ export type UiSnapshotManifest = {
   components: {
     inventory: Record<string, ComponentRecipe>;
   };
-  generatedArtifacts?: {
-    [key: string]: {
-      generatedAt: string;
-      files: SnapshotExportArtifact[];
-    };
-  };
+  generatedArtifacts?: Record<string, SnapshotGeneratedArtifact>;
   provenance: {
     pagesRendered: number;
     nodesCaptured: number;

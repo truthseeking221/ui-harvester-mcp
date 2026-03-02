@@ -1,9 +1,33 @@
 import {
+  ComponentVariantState,
   SnapshotExportFormat,
   SnapshotTargetStack,
   UniversalPackageManifest,
   UiSnapshotManifest,
 } from "./types.js";
+
+type FigmaTextStyleEntry = {
+  styleName: string;
+  sourceName: string;
+  fontFamily: string;
+  fontSize: string;
+  lineHeight: string;
+  fontWeight: string;
+  letterSpacing: string;
+  textAlign?: string;
+  textTransform?: string;
+  semanticHint?: string;
+  source: {
+    route: string;
+    viewport: string;
+    theme: string;
+    screenshot: string;
+    selector?: string;
+    locator?: string;
+    provenance: string[];
+    signature: string;
+  };
+};
 
 function slug(value: string) {
   return value
@@ -154,7 +178,120 @@ function buildFigmaTextStyleName(style: {
   const family = toFigmaSafeName(style.fontFamily || "Sans");
   const size = toFigmaSafeName(style.fontSize || "16px");
   const weight = toFigmaSafeName(style.fontWeight || "400");
-  return `${family}-${size}-${weight}`.slice(0, 72) || "text-style";
+  const lh = toFigmaSafeName(style.lineHeight || "normal");
+  const familyPart = family || "sans";
+  const sizePart = size || "16px";
+  const weightPart = weight || "400";
+  const lhPart = lh || "normal";
+  return `${familyPart}-${sizePart}-${weightPart}-${lhPart}`.slice(0, 80) || "text-style";
+}
+
+function inferTextStyleSemanticHint(styleName: string): string | undefined {
+  const key = styleName.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  if (/(^|\s)(h1|heading1|title1|title)\s?/.test(key)) return "heading.1";
+  if (/(^|\s)(h2|heading2)\s?/.test(key)) return "heading.2";
+  if (/(^|\s)(h3|heading3)\s?/.test(key)) return "heading.3";
+  if (/(^|\s)(body|p|paragraph)\s?/.test(key)) return "body";
+  if (/(^|\s)(small|caption|muted)\s?/.test(key)) return "caption";
+  if (/(^|\s)(button|action)\s?/.test(key)) return "button";
+  return undefined;
+}
+
+function splitMetaFields(raw: string) {
+  return raw
+    .split(/[|,;]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function extractTextStyleField(value: string[] | undefined, field: string): string | undefined {
+  const lines = value ?? [];
+  const key = field.toLowerCase();
+  for (const line of lines) {
+    for (const part of splitMetaFields(line)) {
+      const tokenMatch = part.match(/^(route|viewport|theme|screenshot)\s*[:=]\s*(.+)$/i);
+      if (tokenMatch && tokenMatch[1].toLowerCase() === key) {
+        return tokenMatch[2]?.trim();
+      }
+      const marker =
+        part.toLowerCase().startsWith(`${key}=`) ||
+        part.toLowerCase().startsWith(`${key}:`) ||
+        part.toLowerCase().startsWith(`${key} `);
+      if (marker) {
+        const idx = part.indexOf(part.includes("=") ? "=" : part.includes(":") ? ":" : " ");
+        return part.substring(idx + 1).trim() || undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function ensureUniqueTextStyleName(baseName: string, seen: Map<string, number>) {
+  const safeBase = toFigmaSafeName(baseName) || "text-style";
+  const count = seen.get(safeBase) ?? 0;
+  seen.set(safeBase, count + 1);
+  if (count === 0) return safeBase;
+  return `${safeBase}-${count + 1}`.slice(0, 80);
+}
+
+function collectFigmaTextStyles(snapshot: UiSnapshotManifest): FigmaTextStyleEntry[] {
+  const used = new Map<string, number>();
+  const styles = [...snapshot.tokens.core.textStyles].sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return a.name.localeCompare(b.name);
+  });
+
+  return styles.map((style) => {
+    const provenance = style.provenance?.slice(0, 12) || [];
+    const sourceRoute = extractTextStyleField(provenance, "route") || "all";
+    const sourceViewport = extractTextStyleField(provenance, "viewport") || "all";
+    const sourceTheme = extractTextStyleField(provenance, "theme") || "observed";
+    const sourceScreenshot = extractTextStyleField(provenance, "screenshot") || "derived";
+    const baseName = buildFigmaTextStyleName(style);
+    const styleName = ensureUniqueTextStyleName(baseName, used);
+    const semanticHint = inferTextStyleSemanticHint(style.name);
+    const signature = `${style.fontFamily || ""}|${style.fontSize || ""}|${style.lineHeight || ""}|${style.fontWeight || ""}|${style.letterSpacing || ""}`;
+
+    return {
+      styleName,
+      sourceName: style.name,
+      fontFamily: style.fontFamily || "Inter, Arial, sans-serif",
+      fontSize: style.fontSize || "1rem",
+      lineHeight: style.lineHeight || "normal",
+      fontWeight: style.fontWeight || "400",
+      letterSpacing: style.letterSpacing || "normal",
+      textAlign: style.textAlign || "left",
+      textTransform: style.textTransform || "none",
+      semanticHint,
+      source: {
+        route: sourceRoute,
+        viewport: sourceViewport,
+        theme: sourceTheme,
+        screenshot: sourceScreenshot,
+        selector: styleName ? `text-style:${styleName}` : undefined,
+        locator: `text-style:${style.name}`,
+        provenance,
+        signature,
+      },
+    };
+  });
+}
+
+function buildRouteStateKey(routeState: { route?: string; viewport?: string; theme?: string; state?: string } = {}) {
+  const state = routeState.state ? `${routeState.state}@` : "";
+  return `${state}${routeState.route || "unknown"}|${routeState.viewport || "all"}|${routeState.theme || "observed"}`;
+}
+
+function normalizeStateSource(state: ComponentVariantState["source"] | undefined) {
+  if (!state) return {};
+  return {
+    route: state.route,
+    viewport: state.viewport,
+    theme: state.theme,
+    screenshot: state.screenshot,
+    selector: state.selector,
+    locator: state.locator,
+  };
 }
 
 export function exportFigmaVariables(snapshot: UiSnapshotManifest): string {
@@ -200,11 +337,18 @@ export function exportFigmaVariables(snapshot: UiSnapshotManifest): string {
 
   return JSON.stringify(
     {
-      schema: "ui-harvester/figma-variables/1.0",
+      schema: "ui-harvester/figma-variables/1.1",
+      schemaVersion: "ui-harvester/figma-variables/1.1",
       generatedAt: new Date().toISOString(),
       sourceUrl: snapshot.sourceUrl,
       snapshotId: snapshot.snapshotId,
       modes: snapshot.captureConfig.themes,
+      source: {
+        url: snapshot.sourceUrl,
+        capturedAt: snapshot.createdAt,
+        routeCount: snapshot.evidence.pages.length,
+        viewportCount: snapshot.evidence.pages.length ? new Set(snapshot.evidence.pages.map((page) => `${page.viewport.width}x${page.viewport.height}`)).size : 0,
+      },
       variableGroups: {
         core: {
           colors,
@@ -233,9 +377,11 @@ export function exportFigmaVariables(snapshot: UiSnapshotManifest): string {
 }
 
 export function exportFigmaStyles(snapshot: UiSnapshotManifest): string {
-  const styles = Object.values(snapshot.components.inventory).map((recipe) => ({
-    name: `${recipe.archetype}.${recipe.name}`,
+  const textStyles = collectFigmaTextStyles(snapshot);
+  const styles = Object.values(snapshot.components.inventory).map((recipe, recipeIndex) => ({
+    name: `${toFigmaSafeName(recipe.archetype) || "component"}-${toFigmaSafeName(recipe.name) || recipeIndex}`,
     archetype: recipe.archetype,
+    count: recipe.count,
     variants: recipe.sizeScale.map((entry) => ({
       variant: entry.variant,
       minHeight: entry.minHeight,
@@ -252,25 +398,68 @@ export function exportFigmaStyles(snapshot: UiSnapshotManifest): string {
     states: recipe.states.map((state) => ({
       state: state.state,
       styleSignature: state.styleSignature,
+      changedProperties: [...new Set(state.changedProperties || [])].sort(),
+      changedPropertiesAdded: [...new Set(state.changedPropertiesAdded || [])].sort(),
+      changedPropertiesRemoved: [...new Set(state.changedPropertiesRemoved || [])].sort(),
+      propertyDeltas: state.propertyDeltas || {},
+      examples: [...new Set(state.examples || [])].slice(0, 4),
+      source: normalizeStateSource(state.source),
+      provenance: state.provenance || [],
+      stateEvidence: {
+        route: state.source?.route || "unknown",
+        viewport: state.source?.viewport || "unknown",
+        theme: state.source?.theme || "observed",
+        screenshot: state.source?.screenshot || recipe.states[0]?.source?.screenshot || "not-captured",
+      },
     })),
     provenance: recipe.provenance,
+    routeStateNotes: recipe.states.map((state) => `${state.state}=>${state.source?.route || "unknown"}`).slice(0, 6),
   }));
 
   return JSON.stringify(
     {
-      schema: "ui-harvester/figma-recipes/1.0",
+      schema: "ui-harvester/figma-recipes/1.1",
+      schemaVersion: "ui-harvester/figma-recipes/1.1",
       generatedAt: new Date().toISOString(),
       sourceUrl: snapshot.sourceUrl,
       snapshotId: snapshot.snapshotId,
-      typographyLibrary: snapshot.tokens.core.textStyles.map((style) => ({
-        name: buildFigmaTextStyleName(style),
+      typographyLibrary: textStyles.map((style) => ({
+        name: style.styleName,
+        sourceName: style.sourceName,
         fontFamily: style.fontFamily,
         fontSize: style.fontSize,
         lineHeight: style.lineHeight,
         fontWeight: style.fontWeight,
         letterSpacing: style.letterSpacing,
+        textAlign: style.textAlign,
+        textTransform: style.textTransform,
+        semanticHint: style.semanticHint,
+        stateMap: {
+          route: style.source.route,
+          viewport: style.source.viewport,
+          theme: style.source.theme,
+          screenshot: style.source.screenshot,
+        },
+        provenance: style.source.provenance,
+        source: style.source,
+        signature: style.source.signature,
       })),
-      componentRecipes: styles,
+      componentRecipes: styles.map((style) => ({
+        ...style,
+        stateRouteKeys: style.states.map((state) => ({
+          state: state.state,
+          routeStateKey: buildRouteStateKey({
+            state: state.state,
+            route: state.source?.route,
+            viewport: state.source?.viewport,
+            theme: state.source?.theme,
+          }),
+        })),
+      })),
+      coverage: {
+        routes: [...new Set(snapshot.evidence.pages.map((page) => page.route))],
+        stateCount: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      },
     },
     null,
     2,
@@ -301,6 +490,59 @@ export function exportFigmaPackageBlueprint(snapshot: UiSnapshotManifest): strin
 export function exportFigmaConsolePlan(snapshot: UiSnapshotManifest): string {
   const modes = snapshot.captureConfig.themes.filter((mode) => mode !== "auto");
   const figmaModes = modes.length ? modes : ["light"];
+  const textStyles = collectFigmaTextStyles(snapshot);
+  const componentRecipes = Object.values(snapshot.components.inventory).map((recipe, index) => {
+    const styleName = `${toFigmaSafeName(recipe.archetype) || "component"}-${toFigmaSafeName(recipe.name) || index}`;
+
+    return {
+      name: styleName,
+      archetype: recipe.archetype,
+      count: recipe.count,
+      variants: recipe.sizeScale,
+      states: recipe.states.map((state) => ({
+        state: state.state,
+        changedProperties: [...new Set(state.changedProperties || [])].sort(),
+        changedPropertiesAdded: [...new Set(state.changedPropertiesAdded || [])].sort(),
+        changedPropertiesRemoved: [...new Set(state.changedPropertiesRemoved || [])].sort(),
+        propertyDeltas: state.propertyDeltas || {},
+        source: normalizeStateSource(state.source),
+        stateEvidence: {
+          route: state.source?.route || "unknown",
+          viewport: state.source?.viewport || "all",
+          theme: state.source?.theme || "observed",
+          screenshot: state.source?.screenshot || "not-captured",
+        },
+        provenance: state.provenance || [],
+        examples: [...new Set(state.examples || [])].slice(0, 4),
+        styleSignature: state.styleSignature,
+        routeStateKey: buildRouteStateKey({
+          state: state.state,
+          route: state.source?.route,
+          viewport: state.source?.viewport,
+          theme: state.source?.theme,
+        }),
+      })),
+      commonStyles: recipe.commonStyles,
+      examples: [...new Set(recipe.examples || [])].slice(0, 4),
+      routeStateMap: recipe.states.map((state) => ({
+        state: state.state,
+        routeStateKey: buildRouteStateKey({
+          state: state.state,
+          route: state.source?.route,
+          viewport: state.source?.viewport,
+          theme: state.source?.theme,
+        }),
+        source: {
+          route: state.source?.route || "unknown",
+          viewport: state.source?.viewport || "all",
+          theme: state.source?.theme || "observed",
+          screenshot: state.source?.screenshot || "not-captured",
+          selector: state.source?.selector || undefined,
+          locator: state.source?.locator || undefined,
+        },
+      })),
+    };
+  });
 
   const variablePayload = {
     collectionName: `ui-harvester-${snapshot.snapshotId}`,
@@ -343,41 +585,46 @@ export function exportFigmaConsolePlan(snapshot: UiSnapshotManifest): string {
     ],
   };
 
-  const plan = {
-    schema: "ui-harvester/figma-console-plan/1.0",
-    generatedAt: new Date().toISOString(),
-    sourceUrl: snapshot.sourceUrl,
-    snapshotId: snapshot.snapshotId,
-    objective: "Import snapshot into Figma with reusable variables + text styles then manually map component recipes.",
-    setup: variablePayload,
-    textStyles: snapshot.tokens.core.textStyles.map((style) => ({
-      name: buildFigmaTextStyleName(style),
-      fontFamily: style.fontFamily,
-      fontSize: style.fontSize,
-      lineHeight: style.lineHeight,
-      fontWeight: style.fontWeight,
-      letterSpacing: style.letterSpacing,
-      textAlign: style.textAlign,
-      textTransform: style.textTransform,
-    })),
-    componentRecipes: Object.values(snapshot.components.inventory).map((recipe) => ({
-      archetype: recipe.archetype,
-      variants: recipe.sizeScale,
-      states: recipe.states,
-      commonStyles: recipe.commonStyles,
-      examples: recipe.examples.slice(0, 3),
-    })),
-    toolCalls: [
-      {
-        tool: "figma_setup_design_tokens",
-        payload: variablePayload,
-        note: "Create variables and collections before styling text/components.",
+  const routeStateCoverage = snapshot.evidence.pages.flatMap((capture) =>
+    capture.stateCaptures.map((state) => ({
+      routeStateKey: buildRouteStateKey({
+        state: state.state,
+        route: capture.route,
+        viewport: `${capture.viewport.width}x${capture.viewport.height}`,
+        theme: capture.theme,
+      }),
+      route: capture.route,
+      viewport: `${capture.viewport.width}x${capture.viewport.height}`,
+      theme: capture.theme,
+      state: state.state,
+      sourceStateFound: true,
+      screenshot: state.screenshot,
+      provenance: {
+        target: state.state,
       },
-      {
-        tool: "figma_set_text_style",
-        payload: {
-          styles: snapshot.tokens.core.textStyles.map((style) => ({
-            name: buildFigmaTextStyleName(style),
+    })),
+  );
+
+  const toolCalls = [
+    {
+      step: 1,
+      tool: "figma_setup_design_tokens",
+      objective: "Create or update Figma token collection first.",
+      required: true,
+      payload: variablePayload,
+    },
+    {
+      step: 2,
+      tool: "figma_set_text_styles",
+      objective: "Create deterministic text style records with style-state provenance.",
+      required: true,
+      payload: {
+        textStyles: textStyles.map((style) => ({
+          name: style.styleName,
+          sourceName: style.sourceName,
+          semanticHint: style.semanticHint,
+          source: style.source,
+          properties: {
             fontFamily: style.fontFamily,
             fontSize: style.fontSize,
             lineHeight: style.lineHeight,
@@ -385,18 +632,166 @@ export function exportFigmaConsolePlan(snapshot: UiSnapshotManifest): string {
             letterSpacing: style.letterSpacing,
             textAlign: style.textAlign,
             textTransform: style.textTransform,
+          },
+          provenance: style.source.provenance,
+          signature: style.source.signature,
+        })),
+      },
+    },
+    {
+      step: 3,
+      tool: "figma_create_component_styles",
+      objective: "Create component style families and apply default variants first.",
+      required: true,
+      payload: {
+        recipes: componentRecipes.map((item) => ({
+          name: item.name,
+          archetype: item.archetype,
+          variants: item.variants,
+          commonStyles: item.commonStyles,
+          routeStateMap: item.routeStateMap,
+        })),
+      },
+    },
+    {
+      step: 4,
+      tool: "figma_apply_component_state_variants",
+      objective: "Apply per-state deltas with route/viewport/theme provenance.",
+      required: false,
+      payload: {
+        recipes: componentRecipes.map((item) => ({
+          name: item.name,
+          states: item.states,
+        })),
+      },
+    },
+    {
+      step: 5,
+      tool: "figma_review",
+      objective: "Validate resulting styles and patch uncertain states manually.",
+      required: false,
+      payload: {
+        evidence: {
+          routeStateCoverage,
+          routes: snapshot.evidence.pages.map((capture) => ({
+            route: capture.route,
+            viewport: `${capture.viewport.width}x${capture.viewport.height}`,
+            theme: capture.theme,
+            screenshot: capture.fullPageScreenshot,
+            stateCount: capture.stateCaptures.length,
+            routeSignature: capture.routeSignature,
           })),
         },
-        note: "Create text styles from this payload and reuse them when rebuilding components.",
       },
-    ],
+    },
+  ];
+
+  const plan = {
+    schema: "ui-harvester/figma-console-plan/1.2",
+    schemaVersion: "ui-harvester/figma-console-plan/1.2",
+    generatedAt: new Date().toISOString(),
+    sourceUrl: snapshot.sourceUrl,
+    snapshotId: snapshot.snapshotId,
+    objective: "Generate a deterministic Figma import plan with route/state provenance.",
+    executionHints: {
+      note: [
+        "Execute toolCalls in numeric order.",
+        "Do not skip required steps unless unavailable in your target figma-console toolchain.",
+        "Use routeStateKey on each state to map provenance and apply the correct screenshot/viewport pair.",
+      ],
+      orderedSteps: [
+        "figma_setup_design_tokens",
+        "figma_set_text_styles",
+        "figma_create_component_styles",
+        "figma_apply_component_state_variants",
+        "figma_review",
+      ],
+    },
+    setup: {
+      tokenPayload: variablePayload,
+      routeCoverageCount: snapshot.evidence.pages.length,
+      stateCoverageCount: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      exactnessMode: snapshot.exactness.mode,
+    },
+    textStyleSemanticMap: textStyles.map((style) => ({
+      styleName: style.styleName,
+      sourceName: style.sourceName,
+      semanticHint: style.semanticHint,
+      source: style.source,
+    })),
+    textStyles: textStyles.map((style) => ({
+      name: style.styleName,
+      sourceName: style.sourceName,
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      fontWeight: style.fontWeight,
+      letterSpacing: style.letterSpacing,
+      textAlign: style.textAlign,
+      textTransform: style.textTransform,
+      semanticHint: style.semanticHint,
+      source: style.source,
+      provenance: style.source.provenance,
+      signature: style.source.signature,
+    })),
+    componentRecipes,
+    coverage: {
+      routes: snapshot.evidence.pages.map((route) => ({
+        route: route.route,
+        viewport: `${route.viewport.width}x${route.viewport.height}`,
+        theme: route.theme,
+        screenshot: route.fullPageScreenshot,
+        stateCount: route.stateCaptures.length,
+        routeSignature: route.routeSignature,
+      })),
+      totalRoutes: snapshot.evidence.pages.length,
+      totalStates: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      routeStateCoverage: [...new Set(routeStateCoverage.map((entry) => entry.routeStateKey))],
+    },
+    routeStateCoverage,
+    textStyleMap: textStyles.map((style) => ({
+      styleName: style.styleName,
+      sourceName: style.sourceName,
+      semanticHint: style.semanticHint,
+      signature: style.source.signature,
+    })),
+    toolCalls,
+    toolChain: {
+      orderedSteps: toolCalls.map((tool) => tool.step),
+      requiredSteps: toolCalls.filter((tool) => tool.required).map((tool) => tool.step),
+      optionalSteps: toolCalls.filter((tool) => !tool.required).map((tool) => tool.step),
+      notes: [
+        "If your toolchain uses different tool names, map each payload object manually.",
+        "Persist routeStateKey-based deltas in a deterministic order by route, viewport, then state.",
+      ],
+    },
+    provenance: {
+      schemaVersion: "1.2.0",
+      source: snapshot.sourceUrl,
+      screenshotCount: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      routeCount: snapshot.evidence.pages.length,
+      stateCount: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      captureModes: {
+        viewports: snapshot.captureConfig.viewports.map((viewport) => `${viewport.name} (${viewport.width}x${viewport.height})`),
+        themes: snapshot.captureConfig.themes,
+      },
+      notes: [
+        "All state entries include route/viewport/theme/selector/locator provenance if available.",
+        "tool calls are emitted as ordered operations to avoid partial application drift.",
+        "State route coverage is represented in each component state's `stateEvidence` block.",
+      ],
+    },
+    outputSchema: {
+      schema: "ui-harvester/figma-console-plan/output/1.2",
+      routeStateKey: "component:state@route:viewport:theme",
+      requiredEvidence: ["sourceRoute", "sourceViewport", "sourceTheme", "sourceScreenshot"],
+    },
   };
 
   return JSON.stringify(plan, null, 2);
 }
 
 export function exportUniversalPackageDescriptor(snapshot: UiSnapshotManifest): string {
-  const iconCaptureProfile = snapshot.captureConfig.iconCaptureProfile || "all";
   const manifest: UniversalPackageManifest = {
     schemaVersion: "universal-package/1.2.0",
     snapshotId: snapshot.snapshotId,
@@ -410,6 +805,9 @@ export function exportUniversalPackageDescriptor(snapshot: UiSnapshotManifest): 
       { path: "universal/theme-object.json", description: "Generic/theme stack token object", mediaType: "application/json" },
       { path: "universal/components.json", description: "Component recipes + state matrix", mediaType: "application/json" },
       { path: "universal/dtcg-tokens.json", description: "DTCG-like token export", mediaType: "application/json" },
+      { path: "universal/tokens/core.json", description: "Core tokens (raw)", mediaType: "application/json" },
+      { path: "universal/tokens/semantic.json", description: "Semantic token aliases", mediaType: "application/json" },
+      { path: "universal/layout.json", description: "Breakpoints and layout hints", mediaType: "application/json" },
       { path: "universal/assets/index.json", description: "Universal assets index", mediaType: "application/json" },
       { path: "universal/assets/icons/index.json", description: "Captured icon index", mediaType: "application/json" },
       { path: "universal/figma/variables.json", description: "Figma variable blueprint", mediaType: "application/json" },
@@ -418,6 +816,8 @@ export function exportUniversalPackageDescriptor(snapshot: UiSnapshotManifest): 
       { path: "universal/figma/figma-console-plan.json", description: "Executable figma-console-mcp plan", mediaType: "application/json" },
       { path: "universal/evidence/routes.jsonl", description: "Observed route+viewport captures", mediaType: "application/x-ndjson" },
       { path: "universal/evidence/pages.json", description: "Captured page manifest", mediaType: "application/json" },
+      { path: "universal/motion.json", description: "Motion and transition hints from observed elements", mediaType: "application/json" },
+      { path: "universal/validation/template.json", description: "Validation plan template (placeholder)", mediaType: "application/json" },
     ],
   };
   return JSON.stringify(manifest, null, 2);
@@ -442,15 +842,81 @@ export function buildUniversalPackageArtifacts(
   const iconArtifacts = snapshot.evidence.icons || [];
   const routes = snapshot.evidence.pages.map((capture) => ({
     route: capture.route,
+    routeDepth: capture.routeDepth,
     theme: capture.theme,
     viewport: `${capture.viewport.width}x${capture.viewport.height}`,
     viewportName: capture.viewport.name,
-    routeDepth: capture.routeDepth,
     screenshot: capture.fullPageScreenshot,
     screenshotHash: capture.screenshotHash,
+    routeFingerprint: capture.routeFingerprint,
+    routeSignature: capture.routeSignature,
     nodeCount: capture.sampledNodes,
     stateCount: capture.stateCaptures.length,
   }));
+
+  const textStyles = collectFigmaTextStyles(snapshot).map((style) => ({
+    name: style.styleName,
+    sourceName: style.sourceName,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    lineHeight: style.lineHeight,
+    fontWeight: style.fontWeight,
+    letterSpacing: style.letterSpacing,
+    textAlign: style.textAlign,
+    textTransform: style.textTransform,
+    semanticHint: style.semanticHint,
+    source: style.source,
+  }));
+
+  const componentRecipes = Object.values(snapshot.components.inventory).map((recipe, index) => ({
+    name: `${toFigmaSafeName(recipe.archetype) || "component"}-${toFigmaSafeName(recipe.name) || index}`,
+    archetype: recipe.archetype,
+    count: recipe.count,
+    states: recipe.states.map((state) => ({
+      state: state.state,
+      changedProperties: [...new Set(state.changedProperties || [])].sort(),
+      changedPropertiesAdded: [...new Set(state.changedPropertiesAdded || [])].sort(),
+      changedPropertiesRemoved: [...new Set(state.changedPropertiesRemoved || [])].sort(),
+      propertyDeltas: state.propertyDeltas || {},
+      source: normalizeStateSource(state.source),
+      variants: recipe.sizeScale,
+      examples: [...new Set(state.examples || [])].slice(0, 4),
+      provenance: state.provenance,
+    })),
+    commonStyles: recipe.commonStyles,
+    provenance: recipe.provenance,
+    sizeScale: recipe.sizeScale,
+    examples: recipe.examples,
+  }));
+  const figmaStylesPayload = exportFigmaStyles(snapshot);
+  const parsedFigmaStyles = JSON.parse(figmaStylesPayload) as {
+    componentRecipes?: Array<Record<string, unknown>>;
+    schema?: string;
+    schemaVersion?: string;
+    generatedAt?: string;
+    sourceUrl?: string;
+    snapshotId?: string;
+  };
+  const componentStylePayload = parsedFigmaStyles.componentRecipes ? Object.fromEntries(parsedFigmaStyles.componentRecipes.map((recipe, index) => [String(recipe.name || index), recipe])) : {};
+
+  const normalizedPlan = JSON.parse(exportFigmaConsolePlan(snapshot));
+  const figmaPlanWithPayload: Record<string, unknown> = {
+    ...normalizedPlan,
+    componentStylePayload,
+    textStyles,
+    componentRecipeNotes: componentRecipes.map((item) => ({
+      name: item.name,
+      stateCount: item.states.length,
+      styleCount: item.sizeScale.length,
+    })),
+    sourceSummary: {
+      snapshotId: snapshot.snapshotId,
+      sourceUrl: snapshot.sourceUrl,
+      routeCount: snapshot.evidence.pages.length,
+      stateCount: snapshot.evidence.pages.reduce((count, page) => count + page.stateCaptures.length, 0),
+      exactnessMode: snapshot.exactness.mode,
+    },
+  };
 
   artifacts.push(
     { relativePath: "universal/manifest.json", description: "Universal package manifest", mediaType: "application/json", content: exportUniversalPackageDescriptor(snapshot) },
@@ -501,13 +967,18 @@ export function buildUniversalPackageArtifacts(
     },
     { relativePath: "universal/dtcg-tokens.json", description: "DTCG-like tokens", mediaType: "application/json", content: exportDtcgJson(snapshot) },
     { relativePath: "universal/figma/variables.json", description: "Figma-compatible variables", mediaType: "application/json", content: exportFigmaVariables(snapshot) },
-    { relativePath: "universal/figma/styles.json", description: "Figma-compatible styles", mediaType: "application/json", content: exportFigmaStyles(snapshot) },
+    {
+      relativePath: "universal/figma/styles.json",
+      description: "Figma-compatible styles",
+      mediaType: "application/json",
+      content: figmaStylesPayload,
+    },
     { relativePath: "universal/figma/import-blueprint.json", description: "Figma import blueprint", mediaType: "application/json", content: exportFigmaPackageBlueprint(snapshot) },
     {
       relativePath: "universal/figma/figma-console-plan.json",
       description: "Executable figma-console-mcp plan",
       mediaType: "application/json",
-      content: exportFigmaConsolePlan(snapshot),
+      content: JSON.stringify(figmaPlanWithPayload, null, 2),
     },
     {
       relativePath: "universal/evidence/routes.jsonl",
@@ -521,9 +992,6 @@ export function buildUniversalPackageArtifacts(
       mediaType: "application/json",
       content: JSON.stringify(snapshot.evidence.pages, null, 2),
     },
-  );
-
-  artifacts.push(
     {
       relativePath: "universal/tokens/core.json",
       description: "Core tokens (raw)",
@@ -567,7 +1035,7 @@ export function buildUniversalPackageArtifacts(
         {
           type: "visual-match",
           defaultMaxDiffPercent: 2.5,
-          requiredStateCoverage: ["default", "hover", "focus"],
+          requiredStateCoverage: ["default", "hover", "focus", "open", "error", "disabled"],
           notes: "Run validate_visual_match after project apply to fill this with real diff metrics.",
         },
         null,
@@ -661,7 +1129,7 @@ export function exportThemeObject(snapshot: UiSnapshotManifest, targetStack: Sna
     },
     semantic: snapshot.tokens.semantic,
     components: snapshot.components,
-    exactness: "observed-only",
+    exactness: snapshot.exactness.mode,
   };
   return JSON.stringify(obj, null, 2);
 }

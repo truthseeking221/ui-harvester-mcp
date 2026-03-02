@@ -114,12 +114,13 @@ function resolveArtifactFile(alias: string): string | null {
   "universal-figma-styles": "universal/figma/styles.json",
   "universal-figma-blueprint": "universal/figma/import-blueprint.json",
   "universal-figma-plan": "universal/figma/figma-console-plan.json",
-  "universal-evidence-routes": "universal/evidence/routes.jsonl",
-  "universal-evidence-pages": "universal/evidence/pages.json",
-  "universal-validation-template": "universal/validation/template.json",
   "universal-core-tokens": "universal/tokens/core.json",
   "universal-semantic-tokens": "universal/tokens/semantic.json",
   "universal-layout": "universal/layout.json",
+  "universal-motion": "universal/motion.json",
+  "universal-evidence-routes": "universal/evidence/routes.jsonl",
+  "universal-evidence-pages": "universal/evidence/pages.json",
+  "universal-validation-template": "universal/validation/template.json",
   "universal-assets": "universal/assets/index.json",
   "universal-assets-index": "universal/assets/index.json",
   "universal-assets-icons": "universal/assets/icons/index.json",
@@ -145,10 +146,16 @@ async function handleCrawlAndSave(input: ExtractDesignSystemInput) {
     sourceUrl: manifest.sourceUrl,
     routeCount: manifest.evidence.pages.length,
     routeCountByStatus: manifest.provenance.routeSummary,
+    renderedRouteCount: manifest.provenance.routeSummary?.rendered ?? manifest.evidence.pages.length,
+    skippedRouteCount:
+      (manifest.provenance.routeSummary?.skippedDuplicate ?? 0) +
+      (manifest.provenance.routeSummary?.skippedByBudget ?? 0) +
+      (manifest.provenance.routeSummary?.filteredByRouteBudget ?? 0) +
+      (manifest.provenance.routeSummary?.filteredByPolicy ?? 0),
     createdAt: manifest.createdAt,
     config: manifest.captureConfig,
     exactnessMode: manifest.exactness.mode,
-    warnings: manifest.provenance.warning ?? [],
+    warnings: manifest.provenance.warning ?? manifest.provenance.warnings ?? [],
     cleaning: manifest.provenance.cleaning,
   };
 }
@@ -341,7 +348,7 @@ server.tool(
       sourceUrl: snapshot.sourceUrl,
       generatedAt: new Date().toISOString(),
       exactnessMode: snapshot.exactness.mode,
-      schemaVersion: snapshot.schemaVersion || "1.1.0",
+      schemaVersion: snapshot.schemaVersion || "1.2.0",
       files: manifest,
     };
     const manifestText = JSON.stringify(manifestFile, null, 2);
@@ -361,7 +368,7 @@ server.tool(
               artifactFiles: manifestFiles,
               manifest: `artifacts/${manifestPath}`,
               warnings: written.length ? [] : ["No files generated."],
-              artifactWarnings: snapshot.provenance.warning ?? [],
+              artifactWarnings: snapshot.provenance.warning ?? snapshot.provenance.warnings ?? [],
               exactnessModeUsed: snapshot.exactness.mode,
               routeCountByStatus: snapshot.provenance.routeSummary,
             },
@@ -623,11 +630,12 @@ server.resource(
                   "universal-figma-styles",
                   "universal-figma-blueprint",
                   "universal-figma-plan",
-                  "universal-evidence-routes",
-                  "universal-evidence-pages",
                   "universal-core-tokens",
                   "universal-semantic-tokens",
                   "universal-layout",
+                  "universal-motion",
+                  "universal-evidence-routes",
+                  "universal-evidence-pages",
                   "universal-validation-template",
                   "universal-assets",
                   "universal-assets-index",

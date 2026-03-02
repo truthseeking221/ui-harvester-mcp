@@ -182,7 +182,8 @@ export function buildViewportKey(viewport: { name: string; width: number; height
 }
 
 export function captureId(routeUrl: string, viewport: { name: string; width: number; height: number; deviceScaleFactor?: number }, theme: string, state: string, suffix = "") {
-  const routeKey = toSafeSegment(new URL(routeUrl).pathname || "home");
+  const parsed = new URL(routeUrl);
+  const routeKey = toSafeSegment((parsed.pathname || "home") + (parsed.search || ""));
   const viewKey = parseViewportString(`${viewport.name}-${viewport.width}x${viewport.height}`);
   return toSafeSegment(`${routeKey}_${viewKey}_${theme}_${state}${suffix ? `_${suffix}` : ""}`);
 }

@@ -78,14 +78,30 @@ type SignatureDiff = {
 type InteractionApplyResult = {
   warnings: string[];
   skipped: boolean;
+  probe: InteractionStateProbe;
   restore?: () => Promise<void>;
+};
+
+type InteractionStateProbe = {
+  supported: boolean;
+  stateApplied: boolean;
+  locatorRecovered: boolean;
+  warnings: string[];
 };
 
 type StableResult = {
   stable: boolean;
   checkedFrames: number;
   unchangedFrames: number;
+  unstableFrames: number;
 };
+
+const LOADING_ERROR_STATES = ["loading", "error"] as const;
+
+function safeToFixed(value: number | null | undefined, digits = 3): string {
+  if (!Number.isFinite(value as number)) return "0";
+  return `${Math.round((value as number) * 10 ** digits) / 10 ** digits}`;
+}
 
 type ComponentStateCaptureInput = {
   state: InteractionState;
@@ -175,6 +191,26 @@ const SUPPORTED_INTERACTION_STATES: InteractionState[] = [
   "loading",
   "error",
 ];
+
+const CHECKABLE_TYPES = new Set(["checkbox", "radio", "switch"]);
+const STATE_SUPPORT: Partial<Record<InteractionState, ReadonlySet<string>>> = {
+  checked: new Set(["input", "label", "button", "summary", "checkbox", "radio", "switch"]),
+  selected: new Set(["option", "tab", "menuitem", "checkbox", "radio", "switch", "row"]),
+  open: new Set(["button", "summary", "details", "tab", "menuitem", "combobox", "checkbox", "radio", "switch", "a", "dialog"]),
+  disabled: new Set(["button", "input", "textarea", "select", "summary", "a", "option", "menuitem", "tab", "switch", "checkbox", "radio"]),
+  loading: new Set(["button", "input", "a", "summary", "div", "span", "article", "section"]),
+  error: new Set(["input", "button", "form", "textarea", "select", "article", "section", "div", "span"]),
+};
+
+const supportsStateTarget = (state: InteractionState, hint: { tag?: string; role?: string; type?: string }) => {
+  if (state === "hover" || state === "focus" || state === "active") return true;
+  const tag = toLowerString(hint.tag || "");
+  const role = toLowerString(hint.role || "");
+  const type = toLowerString(hint.type || "");
+  const support = STATE_SUPPORT[state];
+  if (!support) return true;
+  return support.has(tag) || support.has(role) || support.has(type);
+};
 
 const DEFAULT_CLEANING_PROFILE: CleaningProfile = "high";
 const DEFAULT_ICON_CAPTURE_PROFILE: IconCaptureProfile = "all";
@@ -1265,7 +1301,10 @@ export async function harvestIconsForRoute(
 function cleanUrl(input: string) {
   const parsed = new URL(input);
   parsed.hash = "";
-  return `${parsed.origin}${parsed.pathname}`;
+  parsed.searchParams.sort();
+  const cleanPathname = parsed.pathname || "/";
+  const search = parsed.searchParams.toString();
+  return `${parsed.origin}${cleanPathname}${search ? `?${search}` : ""}`;
 }
 
 function toLowerString(value: string | null | undefined) {
@@ -1406,33 +1445,37 @@ function normalizePx(value: string, profile: CleaningProfile = DEFAULT_CLEANING_
     return canonical;
   }
   if (canonical.startsWith("calc(") || canonical.startsWith("max(") || canonical.startsWith("min(") || canonical.startsWith("clamp(")) {
-    return `${canonical}`;
+    return canonical;
   }
   const [normalized, alias] = canonical.split(";px=");
-  const base = normalizeCanonicalLengthForProfile(normalized, profile) || "";
-  if (!base) return "";
+  const normalizedLower = (normalizeCanonicalLengthForProfile(normalized, profile) || normalized).toLowerCase();
+  if (!normalizedLower) return "";
 
-  const normalizedLower = base.toLowerCase();
-  const unit = normalizedLower.match(/-?\d*\.?\d+(?:[a-z%]+)?$/)?.[0] || "";
-  const numericOnly = unit ? normalizedLower.replace(unit, "") === "" || normalizedLower.startsWith("calc") : false;
-
-  if (/%|vw|vh|vmin|vmax$/i.test(normalizedLower) || numericOnly && /(%|vw|vh|vmin|vmax)$/.test(unit)) {
+  const match = normalizedLower.match(/^(-?\d*\.?\d+)([a-z%]+)?$/);
+  if (!match) {
     return `${normalizedLower};raw`;
   }
+  const numeric = Number.parseFloat(match[1] || "");
+  if (!Number.isFinite(numeric)) return "";
+  const unit = (match[2] || "px").toLowerCase();
+  const digits = PROFILE_LIMITS[profile].sizeValueDigits;
 
-  const nonPxUnit = /(rem|em|ch|ex|lh|rlh|fr|cqw|cqh|cqi|cqb|cqmin|cqmax)$/i.test(normalizedLower);
-  if (nonPxUnit) {
-    if (alias) return `${normalizedLower};alias=${alias}`;
-    return profile === "minimal" ? normalizedLower : `${normalizedLower};raw`;
+  if (unit === "px") return safeToFixed(numeric, digits) + "px";
+  if (unit === "%") return safeToFixed(numeric, digits) + "%";
+  if (unit === "rem" || unit === "em") {
+    const asPx = safeToFixed(numeric * 16, digits);
+    const base = `${safeToFixed(numeric, digits)}${unit}`;
+    return profile === "minimal" ? base : `${base};px=${asPx}px`;
+  }
+  if (unit === "vw" || unit === "vh" || unit === "vmin" || unit === "vmax" || unit === "ch" || unit === "ex" || unit === "lh" || unit === "rlh" || unit === "fr") {
+    return `${safeToFixed(numeric, digits)}${unit}`;
+  }
+  if (unit === "cqw" || unit === "cqh" || unit === "cqi" || unit === "cqb" || unit === "cqmin" || unit === "cqmax") {
+    return profile === "minimal" ? `${safeToFixed(numeric, digits)}${unit}` : `${safeToFixed(numeric, digits)}${unit};alias=${alias || normalizedLower}`;
   }
 
-  if (alias && profile !== "minimal") return `${normalizedLower};alias=${alias}`;
-  if (!alias && profile !== "minimal" && /(^-?\d*\.?\d+)([a-z%]+)?$/.test(normalizedLower) && !normalizedLower.endsWith("px")) {
-    const raw = normalizedLower.match(/-?\d*\.?\d+(?:\.[0-9]+)?/)?.[0] || normalizedLower;
-    if (raw && Number.isFinite(Number(raw))) return `${normalizedLower};alias=${normalizedLower}`;
-  }
-
-  return normalizedLower;
+  if (alias && profile !== "minimal") return `${safeToFixed(numeric, digits)}${unit};alias=${alias}`;
+  return `${safeToFixed(numeric, digits)}${unit};raw`;
 }
 
 function normalizePxOrRawLength(value: string): string {
@@ -1701,6 +1744,61 @@ function parseHexColor(value: string): string | null {
   return `#${hex}`;
 }
 
+function normalizeColorFunctionFallback(value: string): string {
+  const match = /^([a-z0-9_-]+)\((.*)\)$/i.exec(value.trim());
+  if (!match) return "";
+  const fn = toLowerString(match[1] || "");
+  const body = toLowerString(match[2] || "");
+  const compact = body.replace(/\s+/g, " ").trim();
+  if (!compact || !fn) return "";
+  if (fn === "color-mix") return `color-mix(${compact.slice(0, 160)})`;
+  if (fn === "linear-gradient" || fn === "radial-gradient" || fn === "conic-gradient" || fn === "repeating-linear-gradient") return `${fn}(...)`;
+  if (fn === "hwb" || fn === "hsl" || fn === "hsla" || fn === "rgb" || fn === "rgba" || fn === "lab" || fn === "lch" || fn === "contrast" || fn === "color") {
+    return `${fn}(${compact.slice(0, 120)})`;
+  }
+  return `${fn}(${compact.slice(0, 80)})`;
+}
+
+function parseColorChannelForSpace(value: string, spaceMax = 255): number | null {
+  const raw = toLowerString(value);
+  if (!raw) return null;
+  if (raw.endsWith("%")) {
+    const normalized = normalizeNumber(raw.slice(0, -1));
+    if (normalized === null) return null;
+    return clampByte((normalized / 100) * spaceMax);
+  }
+  const numeric = normalizeNumber(raw);
+  if (numeric === null) return null;
+  if (spaceMax === 1) return clampByte(Math.round(normalizeAlphaValue(raw) * 255));
+  return clampByte(Math.round(Math.min(spaceMax, Math.max(0, numeric))));
+}
+
+function tryParseColorFunctionToHex(input: string): string | null {
+  const value = toLowerString(input);
+  if (!value.startsWith("color(") || !value.endsWith(")")) return null;
+  const body = value.slice(6, -1).trim();
+  if (!body) return null;
+  const tokens = body
+    .replace(/\//g, " / ")
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map((token) => token.trim());
+  const space = tokens[0] || "";
+  const separatorIndex = tokens.indexOf("/");
+  const channels = separatorIndex === -1 ? tokens.slice(1) : tokens.slice(1, separatorIndex);
+  if (channels.length < 3) return null;
+  if (space === "srgb" || space === "srgb-linear" || space === "display-p3" || space === "a98-rgb" || space === "prophoto-rgb" || space === "rec-2020") {
+    const channelValues = channels.slice(0, 3).map((item) => parseColorChannelForSpace(item, 255));
+    if (channelValues.includes(null)) return null;
+    const base = `#${toHex(channelValues[0] || 0)}${toHex(channelValues[1] || 0)}${toHex(channelValues[2] || 0)}`;
+    const alphaToken = separatorIndex === -1 ? null : tokens[separatorIndex + 1] || null;
+    const alpha = alphaToken === null ? 1 : normalizeAlphaValue(alphaToken);
+    if (!Number.isFinite(alpha) || alpha >= 1) return base;
+    return `${base}${toHex(Math.round(Math.min(1, Math.max(0, alpha)) * 255))}`;
+  }
+  return null;
+}
+
 export function normalizeColorValue(input: string, profile: CleaningProfile = DEFAULT_CLEANING_PROFILE): string {
   const value = toLowerString(input);
   if (!value || value === "currentcolor" || value === "none" || value === "initial" || value === "inherit" || value === "unset") return "";
@@ -1717,7 +1815,7 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
     value.startsWith("repeating-linear-gradient") ||
     value.startsWith("color-mix(")
   ) {
-    return "gradient";
+    return profile === "minimal" ? "gradient" : normalizeColorFunctionFallback(value);
   }
 
   const named = NAMED_COLOR_HEX.get(value);
@@ -1729,7 +1827,16 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
   if (value.startsWith("hsl(") || value.startsWith("hsla(")) {
     const tokenise = (inputValue: string) => {
       const inner = inputValue.replace(/^hsla?\(/, "").replace(/\)$/, "");
-      const tokens = inner.split(/[\s,/]+/).map((part) => part.trim()).filter(Boolean);
+      if (!inner) return null;
+      const normalized = inner.replace(/\//g, " / ").trim();
+      const tokens = normalized
+        .split("/")
+        .flatMap((chunk, chunkIndex) => {
+          if (!chunk.trim()) return [];
+          if (chunkIndex === 0) return chunk.replace(/,/g, " ").split(/\s+/).filter(Boolean);
+          return chunk.split(",").map((part) => part.trim()).filter(Boolean);
+        })
+        .filter(Boolean);
       if (tokens.length < 3) return null;
       return tokens;
     };
@@ -1763,7 +1870,10 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
   if (value.startsWith("rgb(") || value.startsWith("rgba(")) {
     const parsed = /^rgba?\(([^)]+)\)$/i.exec(value);
     if (!parsed) return value;
-    const parts = parsed[1].split(",").map((token) => token.trim()).filter(Boolean);
+    const normalized = parsed[1].replace(/\//g, " / ").trim();
+    const head = normalized.split("/")[0] || "";
+    const tail = normalized.split("/")[1];
+    const parts = [...head.replace(/,/g, " ").split(/\s+/).filter(Boolean), ...(tail ? [tail.trim()] : [])].filter(Boolean);
     if (parts.length < 3) return value;
 
     const toByte = (item: string) => {
@@ -1787,8 +1897,23 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
     return `${base}${toHex(Math.round(alpha * 255))}`;
   }
 
+  if (value.startsWith("color(")) {
+    const parsed = tryParseColorFunctionToHex(value);
+    if (parsed) return parsed;
+    return normalizeColorFunctionFallback(value);
+  }
+
   if (value.startsWith("hwb(")) {
-    const tokens = value.slice(4, -1).split(",").map((part) => part.trim()).filter(Boolean);
+    const raw = value.slice(4, -1).trim();
+    const normalized = raw.replace(/\//g, " / ");
+    const tokens = normalized
+      .split("/")
+      .flatMap((chunk, chunkIndex) => {
+        if (!chunk.trim()) return [];
+        if (chunkIndex === 0) return chunk.replace(/,/g, " ").split(/\s+/).filter(Boolean);
+        return [chunk.trim()];
+      })
+      .filter(Boolean);
     if (tokens.length >= 3) {
       const h = normalizeNumber(tokens[0]);
       const w = normalizeNumber(tokens[1]);
@@ -1813,7 +1938,10 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
   }
 
   if (value.startsWith("lab(") || value.startsWith("lch(") || value.startsWith("color(") || value.startsWith("contrast(")) {
-    return profile === "minimal" ? `${value}` : value.startsWith("color(") ? "color" : value.startsWith("lab(") ? "lab" : value.startsWith("lch(") ? "lch" : "contrast";
+    if (value.startsWith("lab(") || value.startsWith("lch(") || value.startsWith("contrast(")) {
+      return normalizeColorFunctionFallback(value);
+    }
+    return value;
   }
 
   return value;
@@ -1821,10 +1949,10 @@ export function normalizeColorValue(input: string, profile: CleaningProfile = DE
 
 function signatureFromStyles(style: NodeComputedStyle, profile: CleaningProfile = DEFAULT_CLEANING_PROFILE) {
   const entries = signatureStyleKeys
-    .map((key) => [
-      String(key),
-      normalizeStyleValueForSignature(key, (style as unknown as Record<string, string>)[key] || "", profile),
-    ] as const)
+    .map((key) => {
+      const raw = (style as unknown as Record<string, string>)[key] || "";
+      return [String(key), normalizeStyleValueForSignature(key, raw, profile)] as const;
+    })
     .filter(([, value]) => Boolean(value))
     .map(([key, value]) => `${key}:${value}`)
     .sort((a, b) => a.localeCompare(b));
@@ -1942,6 +2070,7 @@ function classifyArchetype(sample: {
     normalizedType === "checkbox" ||
     normalizedType === "radio";
   const hasRadius = Boolean(sample.styles?.borderRadius && sample.styles.borderRadius !== "0" && sample.styles.borderRadius !== "0px");
+  const hasBorder = Boolean(sample.styles?.borderWidth && sample.styles.borderWidth !== "0" && sample.styles.borderWidth !== "none");
   const hasPadding = Boolean(
     (normalizePxNumericOnly(sample.styles?.paddingTop || "") || 0) > 0 ||
       (normalizePxNumericOnly(sample.styles?.paddingRight || "") || 0) > 0 ||
@@ -1954,9 +2083,17 @@ function classifyArchetype(sample: {
   if (role === "link" || tag === "a") return "link";
   if (roleHint === "switch" || role === "switch" || tag === "summary") return "switch";
   if (hasToggleHint) return "toggle";
+  if (normalizedType === "checkbox") return "input-checkbox";
+  if (normalizedType === "radio") return "input-radio";
+  if (normalizedType === "range") return "input-range";
+  if (normalizedType === "search" || normalizedType === "password" || normalizedType === "email" || normalizedType === "tel" || normalizedType === "date" || normalizedType === "time" || normalizedType === "month" || normalizedType === "week" || normalizedType === "number") {
+    return `input-${normalizedType}`;
+  }
   if (tag === "input") {
     if (type === "checkbox") return "input-checkbox";
     if (type === "radio") return "input-radio";
+    if (type === "button") return "input-button";
+    if (type === "submit") return "input-submit";
     if (type === "range") return "input-range";
     if (type === "search") return "input-search";
     if (type === "password") return "input-password";
@@ -1974,7 +2111,7 @@ function classifyArchetype(sample: {
     if (type === "month") return "input-month";
     if (type === "week") return "input-week";
     if (type === "checkbox" || type === "radio") return `input-${type}`;
-    if (roleHint === "switch") return "switch";
+    if (roleHint === "switch") return "input-switch";
     return `input-${type || "text"}`;
   }
   if (tag === "textarea") return "textarea";
@@ -1984,6 +2121,7 @@ function classifyArchetype(sample: {
   if (roleHint === "listbox" || tag === "li" || roleHint === "list") return "list";
   if (roleHint === "tabpanel") return "tabpanel";
   if (tag === "table" || tag === "thead" || tag === "tbody" || tag === "tr" || tag === "td" || tag === "th") return "table";
+  if (role === "dialog" || tag === "dialog") return "modal";
   if (roleHint === "checkbox") return "input-checkbox";
   if (roleHint === "radio") return "input-radio";
   if (roleHint === "tab") return "tab";
@@ -1991,10 +2129,13 @@ function classifyArchetype(sample: {
   if (/^h[1-6]$/.test(tag)) return "heading";
   if (tag === "header") return "header";
   if (tag === "footer") return "footer";
-  if ((tagLayoutHint || tag === "div" || tag === "section" || tag === "article") &&
+  if (
+    (tagLayoutHint || tag === "div" || tag === "section" || tag === "article") &&
     (hasCardHints ||
       ((childCount >= 2 || className.includes("row") || className.includes("col") || className.includes("container")) &&
-        (hasPadding || hasSurfaceStyle || hasRadius || childCount >= 3)))) return "card";
+        (hasPadding || hasSurfaceStyle || hasRadius || hasBorder || childCount >= 3)))
+  )
+    return "card";
   if (tag === "dialog" || role === "dialog") return "modal";
   if (tag === "form" || roleHint === "form") return "form";
   if (className.includes("toast") || roleHint === "status" || roleHint === "alert") return "toast";
@@ -2014,20 +2155,13 @@ function styleFingerprintFromSamples(
 
   const visibleSampleCount = samples.filter((entry) => entry.visible).length;
   const totalCount = samples.length || 0;
-  const topKCount = Math.max(120, Math.min(260, Math.min(360, Math.ceil(totalCount * 0.35))));
-  const stableSortByGeometry = [...samples].sort((a, b) => {
-    const areaA = Math.max(0, a.rect.width * a.rect.height);
-    const areaB = Math.max(0, b.rect.width * b.rect.height);
-    if (areaB !== areaA) return areaB - areaA;
-    if (a.visible !== b.visible) return a.visible ? -1 : 1;
-    return a.uid.localeCompare(b.uid);
-  });
+  const topKCount = Math.max(100, Math.min(280, Math.min(420, Math.ceil(totalCount * 0.32))));
   const weightBySample = (sample: NodeSample) => {
-    const visibleWeight = sample.visible ? 1 : 0.35;
+    const visibleWeight = sample.visible ? 1 : 0.45;
     const area = Math.max(0, Math.round(sample.rect.width * sample.rect.height));
     return visibleWeight * Math.log(area + 1);
   };
-  const topK = stableSortByGeometry
+  const topK = [...samples]
     .map((entry) => ({ entry, score: weightBySample(entry) }))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -2037,7 +2171,7 @@ function styleFingerprintFromSamples(
     .map(({ entry }) => `${entry.uid}|${entry.styleSignature}`)
     .sort((a, b) => a.localeCompare(b));
 
-  const signature = topK.join(";");
+  const signature = topK.join("|");
   const route = context?.route || "";
   const viewport = context?.viewport ? `${context.viewport.width}x${context.viewport.height}` : "";
   const viewportName = context?.viewport?.name || "";
@@ -2151,11 +2285,21 @@ async function waitForStable(page: Page, cfg: Required<WaitConfig>): Promise<Sta
   await page.evaluate(() => document.fonts.ready).catch(() => {});
 
   let unchanged = 0;
+  let unstable = 0;
   let prev = "";
   for (let i = 0; i < cfg.mutationStabilityFrames; i++) {
     await page.waitForTimeout(180);
-    const sig = await page.evaluate(() => document.body ? `${document.body.children.length}:${document.body.scrollHeight}:${document.body.innerText.length}` : "");
+    const sig = await page.evaluate(() => {
+      if (!document.body) return "";
+      const body = document.body;
+      const first = body.children ? body.children.length : 0;
+      const state = body.innerText || "";
+      const textLength = Number(state.length);
+      const htmlLength = body.innerHTML ? body.innerHTML.length : 0;
+      return `${first}:${body.scrollHeight}:${textLength}:${htmlLength}`;
+    });
     if (sig === prev) unchanged += 1;
+    else unstable += 1;
     prev = sig;
   }
   if (cfg.fontWaitMs > 0) await page.waitForTimeout(cfg.fontWaitMs);
@@ -2163,6 +2307,7 @@ async function waitForStable(page: Page, cfg: Required<WaitConfig>): Promise<Sta
     stable: unchanged >= Math.max(1, cfg.mutationStabilityFrames - 1),
     checkedFrames: cfg.mutationStabilityFrames,
     unchangedFrames: unchanged,
+    unstableFrames: unstable,
   };
 }
 
@@ -2178,8 +2323,8 @@ async function gatherSamples(
   } = {},
 ): Promise<GatheredSamples> {
   const contextToken = `${sampleContext.route || "route"}|${sampleContext.viewport || "viewport"}|${sampleContext.theme || "theme"}`;
-  const rawSamples = await page.evaluate(
-    ({ maxSamples, sampleStride, routeToken }) => {
+  const rawSamples: any[] = await page.evaluate(
+    ({ maxSamples, sampleStride }) => {
       const nodes = Array.from(document.querySelectorAll("*")).filter((node) => node instanceof Element) as Element[];
       const step = Math.max(1, sampleStride * Math.max(1, Math.floor(nodes.length / Math.max(1, maxSamples))));
 
@@ -2288,7 +2433,6 @@ async function gatherSamples(
       return out;
     },
     { maxSamples, sampleStride },
-    { maxSamples, sampleStride, routeToken: contextToken },
   );
 
   const seen = rawSamples.length;
@@ -2351,6 +2495,7 @@ function buildDescriptorSelectorCandidates(target: InteractiveTarget): string[] 
   if (target.id) {
     candidates.add(`#${CSS.escape(target.id)}`);
     candidates.add(`${target.tag}#${CSS.escape(target.id)}`);
+    candidates.add(`*[id='${CSS.escape(target.id)}']`);
   }
   if (target.tag) {
     candidates.add(target.tag);
@@ -2378,6 +2523,13 @@ function buildDescriptorSelectorCandidates(target: InteractiveTarget): string[] 
   if (target.role) {
     candidates.add(`[role="${CSS.escape(target.role)}"]`);
     if (target.role === "switch") candidates.add(`${target.tag || "*"}[aria-checked]`);
+  }
+  if (target.classTokens.length >= 2) {
+    const escaped = target.classTokens.map((token) => CSS.escape(token)).filter(Boolean);
+    if (escaped[1]) candidates.add(`.${escaped[0]}.${escaped[1]}`);
+  }
+  if (target.bbox) {
+    candidates.add(`bbox:${Math.round(target.bbox.x)},${Math.round(target.bbox.y)}`);
   }
   return [...candidates];
 }
@@ -2856,6 +3008,13 @@ async function resolveInteractiveTarget(
   if (target.bbox) strategyTryOrder.push({ strategy: "bbox", selector: `bbox:${Math.round(target.bbox.x)},${Math.round(target.bbox.y)}` });
   strategyTryOrder.push({ strategy: "role-text", selector: "", text: cleanText || "", filter: cleanRole ? `[role='${target.role}']` : "" });
 
+  if (!strategyTryOrder.length) {
+    strategyTryOrder.push({
+      strategy: "selector",
+      selector: "a,button,input,textarea,select,summary,[role='button'],[role='link'],[role='tab'],[role='menuitem'],[role='combobox'],[role='listbox'],[role='checkbox'],[role='radio'],[role='switch'],[role='list'],[role='navigation'],[role='menu'],[role='textbox'],[role='slider'],[role='search'],[role='toolbar'],[role='tabpanel'],[role='dialog'],details,summary,option,li",
+    });
+  }
+
   const normalizeSelector = (item: { strategy: string; selector: string; text?: string }) => {
     if (item.selector.startsWith("bbox:")) return item.selector;
     if (item.strategy === "text" || item.strategy === "role-text") return `${item.strategy}:${(item.text || "").slice(0, 120)}`;
@@ -2873,20 +3032,12 @@ async function resolveInteractiveTarget(
     ordered.push(item);
   }
 
-  if (state) {
-    ordered.push({ strategy: "route-state", selector: `${route}:${viewport.name}:${state}` });
-  }
-
   const seen = new Set<string>();
   for (const item of ordered) {
     const key = `${item.strategy}:${item.selector}`;
     if (seen.has(key)) continue;
     seen.add(key);
     attempts.push(item.strategy);
-
-    if (item.strategy === "route-state") {
-      continue;
-    }
 
     if (item.strategy === "role-text") {
       const roleTextSelector = `role=${item.filter?.replace(/^\[role='|'\]$/g, "")}|${encodeURIComponent(item.text || "")}`;
@@ -3158,22 +3309,34 @@ async function applyInteractionState(
   page: Page,
   state: InteractionState,
   target: ResolvedInteractiveTarget,
-): Promise<{ warnings: string[]; skipped: boolean }> {
+): Promise<InteractionApplyResult> {
   const warnings: string[] = [];
+  const probe: InteractionStateProbe = {
+    supported: true,
+    stateApplied: false,
+    locatorRecovered: true,
+    warnings: [],
+  };
+
   if (!target.found) {
-    return { warnings: ["target_not_found"], skipped: true };
+    probe.supported = false;
+    probe.warnings.push("target_not_found");
+    return { warnings: ["target_not_found"], skipped: true, probe };
   }
 
   const locator = page.locator(target.selector).first();
   const exists = await locator.count();
   if (!exists) {
-    return { warnings: ["target_not_found_after_resolve"], skipped: true };
+    probe.supported = false;
+    probe.warnings.push("target_not_found_after_resolve");
+    return { warnings: ["target_not_found_after_resolve"], skipped: true, probe };
   }
 
   const controlState = await locator
     .evaluate((node) => {
       const element = node as HTMLElement;
       const role = (element.getAttribute("role") || element.tagName).toLowerCase();
+      const tag = element.tagName ? element.tagName.toLowerCase() : "";
       const inputType = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.type : "";
       const isDisabled = element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true" || element.getAttribute("aria-disabled") === "1";
       const isChecked = "checked" in (element as { checked?: boolean }) ? Boolean((element as { checked?: boolean }).checked) : false;
@@ -3185,10 +3348,26 @@ async function applyInteractionState(
       const ariaPressed = element.getAttribute("aria-pressed");
       const dataOpen = element.getAttribute("data-open");
       const detailsOpen = element instanceof HTMLDetailsElement ? String(element.open) : null;
+      const className = (element.getAttribute("class") || "").toLowerCase();
       return {
         role,
+        tag,
         type: (inputType || "").toLowerCase(),
         isDisabled: Boolean(isDisabled),
+        hasAriaDisabled: element.hasAttribute("aria-disabled"),
+        canNativeDisable: "disabled" in element,
+        canAriaDisable:
+          element.hasAttribute("aria-disabled") ||
+          role === "button" ||
+          role === "menuitem" ||
+          role === "tab" ||
+          role === "switch" ||
+          role === "checkbox" ||
+          role === "radio" ||
+          tag === "button" ||
+          tag === "a" ||
+          tag === "summary" ||
+          tag === "option",
         isChecked,
         isSelected,
         hasExpanded: expanded === "true" || expanded === "false",
@@ -3201,14 +3380,54 @@ async function applyInteractionState(
         hasAriaInvalid: ariaInvalid === "true",
         hasDetailsOpen: detailsOpen !== null,
         hasDataOpen: dataOpen === "true" || dataOpen === "1",
+        hasOpenIndicator:
+          role === "button" ||
+          role === "summary" ||
+          role === "tab" ||
+          role === "menuitem" ||
+          role === "combobox" ||
+          role === "details" ||
+          role === "listbox" ||
+          tag === "summary" ||
+          tag === "details" ||
+          /toggle|switch|expand|accordion/.test(className),
+        hasAriaControlHint: Boolean(element.getAttribute("aria-controls")),
+        hasDataOpenHint: Boolean(dataOpen),
       };
     })
-    .catch(
-      () =>
-        ({ role: "", type: "", isDisabled: false, isChecked: false, isSelected: false, hasExpanded: false, expanded: null as string | null, ariaPressed: null, dataState: null, detailsOpen: null, ariaBusy: false, hasDataState: false, hasDataOpen: false, hasAriaInvalid: false, hasDetailsOpen: false } as {
+        .catch(
+          () =>
+            ({
+              role: "",
+              tag: "",
+              type: "",
+              isDisabled: false,
+              hasAriaDisabled: false,
+              canNativeDisable: false,
+              canAriaDisable: false,
+              isChecked: false,
+              isSelected: false,
+              hasExpanded: false,
+              expanded: null as string | null,
+              ariaPressed: null,
+          dataState: null,
+          detailsOpen: null,
+          ariaBusy: false,
+          hasDataState: false,
+          hasDataOpen: false,
+          hasAriaInvalid: false,
+          hasDetailsOpen: false,
+          hasOpenIndicator: false,
+          hasAriaControlHint: false,
+          hasDataOpenHint: false,
+        } as {
           role: string;
+          tag: string;
           type: string;
           isDisabled: boolean;
+          hasAriaDisabled: boolean;
+          canNativeDisable: boolean;
+          canAriaDisable: boolean;
           isChecked: boolean;
           isSelected: boolean;
           hasExpanded: boolean;
@@ -3221,32 +3440,47 @@ async function applyInteractionState(
           hasDataOpen: boolean;
           hasAriaInvalid: boolean;
           hasDetailsOpen: boolean;
+          hasOpenIndicator: boolean;
+          hasAriaControlHint: boolean;
+          hasDataOpenHint: boolean;
         }),
     );
 
-  const isInputType = ["checkbox", "radio", "switch", "search", "text", "password", "email", "url", "number", "range"].includes(controlState.type);
-  const supportsChecked = ["checkbox", "radio", "switch"].includes(controlState.type) || ["checkbox", "radio", "switch"].includes(controlState.role);
-  const supportsSelected = ["tab", "option", "menuitem", "row", "checkbox", "radio"].includes(controlState.role);
-  const hasOpenTarget = controlState.hasExpanded || controlState.detailsOpen !== null || controlState.role === "button" || controlState.role === "summary";
+  const isCheckLike = ["checkbox", "radio", "switch"].includes(controlState.type) || ["checkbox", "radio", "switch"].includes(controlState.role);
+  const supportsChecked = isCheckLike;
+  const supportsSelected = ["tab", "option", "menuitem", "row", "checkbox", "radio", "switch"].includes(controlState.role);
+  const hasOpenTarget = controlState.hasOpenIndicator || controlState.hasExpanded || controlState.hasAriaControlHint || controlState.hasDataOpenHint;
+  const stateCapable = supportsStateTarget(state, {
+    tag: controlState.tag,
+    role: controlState.role,
+    type: controlState.type,
+  });
+
+  const captureDisabledRestore: { fn?: () => Promise<void> } = {};
 
   switch (state) {
     case "hover":
       await locator.hover({ timeout: 1_000 }).catch(() => {});
+      probe.stateApplied = true;
       break;
     case "focus":
       await locator.focus().catch(() => {});
+      probe.stateApplied = true;
       break;
     case "active":
       await locator.dispatchEvent("mousedown").catch(() => {});
       await locator.dispatchEvent("mouseup").catch(() => {});
+      probe.stateApplied = true;
       break;
     case "checked":
-      if (!supportsChecked) {
+      if (!stateCapable || !supportsChecked || (!["checkbox", "radio", "switch"].includes(controlState.type) && !["checkbox", "radio", "switch"].includes(controlState.role))) {
         warnings.push("checked_not_applicable");
+        probe.supported = false;
         break;
       }
       if (controlState.isDisabled) {
         warnings.push("checked_disabled_target");
+        probe.supported = false;
         break;
       }
       if (!controlState.isChecked) {
@@ -3256,34 +3490,46 @@ async function applyInteractionState(
         .evaluate((node) => (node as HTMLInputElement).checked || node.getAttribute("aria-checked") === "true")
         .catch(() => false);
       if (!postChecked) {
-        warnings.push("checked_state_not_reflected");
+        warnings.push(controlState.isChecked ? "checked_already_active" : "checked_state_not_reflected");
+        probe.stateApplied = false;
+      } else {
+        probe.stateApplied = true;
       }
       break;
     case "selected":
-      if (!supportsSelected || controlState.isSelected) {
-        if (!supportsSelected) {
-          warnings.push("selected_not_applicable");
-        }
+      if (!stateCapable || !supportsSelected) {
+        if (!supportsSelected) warnings.push("selected_not_applicable");
+        probe.supported = false;
+        break;
+      }
+      if (controlState.isSelected) {
+        warnings.push("selected_already_selected");
+        probe.stateApplied = true;
         break;
       }
       if (controlState.isDisabled) {
         warnings.push("selected_disabled_target");
+        probe.supported = false;
         break;
       }
-      if (controlState.type && !isInputType) {
+      if (controlState.type || controlState.role) {
         await locator.click({ timeout: 1_000 }).catch(() => {});
+        probe.stateApplied = true;
       }
       break;
     case "open":
-      if (!hasOpenTarget) {
+      if (!stateCapable || !hasOpenTarget) {
         warnings.push("open_not_applicable");
+        probe.supported = false;
         break;
       }
       if (controlState.isDisabled) {
         warnings.push("open_disabled_target");
+        probe.supported = false;
         break;
       }
       await locator.click({ timeout: 1_000 }).catch(() => {});
+      await page.waitForTimeout(70).catch(() => {});
       const openAfter = await locator
         .evaluate((node) => ({
           expanded: node.getAttribute("aria-expanded"),
@@ -3292,72 +3538,279 @@ async function applyInteractionState(
           dataState: node.getAttribute("data-state"),
           dataOpen: node.getAttribute("data-open"),
           ariaPressed: node.getAttribute("aria-pressed"),
+          ariaControls: node.getAttribute("aria-controls"),
         }))
-        .catch(() => ({ expanded: null as string | null, controls: null as string | null, detailsOpen: null as string | null, dataState: null as string | null, dataOpen: null as string | null, ariaPressed: null as string | null }));
-      if (openAfter.expanded === "false" || openAfter.detailsOpen === "false" || openAfter.dataState === "closed" || openAfter.ariaPressed === "false") {
-        warnings.push("open_state_not_reflected");
+        .catch(
+          () =>
+            ({
+              expanded: null as string | null,
+              controls: null as string | null,
+              detailsOpen: null as string | null,
+              dataState: null as string | null,
+              dataOpen: null as string | null,
+              ariaPressed: null as string | null,
+              ariaControls: null as string | null,
+            }) as {
+              expanded: string | null;
+              controls: string | null;
+              detailsOpen: string | null;
+              dataState: string | null;
+              dataOpen: string | null;
+              ariaPressed: string | null;
+              ariaControls: string | null;
+            },
+        );
+      const normalizedExpanded = (openAfter.expanded || "").toLowerCase();
+      const normalizedPressed = (openAfter.ariaPressed || "").toLowerCase();
+      const normalizedDataState = (openAfter.dataState || "").toLowerCase();
+      const normalizedDataOpen = (openAfter.dataOpen || "").toLowerCase();
+      const isOpen =
+        normalizedExpanded === "true" ||
+        normalizedPressed === "true" ||
+        normalizedDataState === "open" ||
+        normalizedDataOpen === "open" ||
+        normalizedDataOpen === "true" ||
+        String(openAfter.detailsOpen).toLowerCase() === "true";
+      const hasMarker =
+        Boolean(openAfter.expanded) ||
+        Boolean(openAfter.controls) ||
+        Boolean(openAfter.ariaControls) ||
+        Boolean(openAfter.dataState) ||
+        Boolean(openAfter.dataOpen) ||
+        Boolean(openAfter.ariaPressed) ||
+        Boolean(openAfter.detailsOpen) ||
+        controlState.hasExpanded ||
+        controlState.hasDataOpen ||
+        controlState.hasAriaControlHint;
+      if (!hasMarker || !isOpen) {
+        warnings.push(hasMarker ? "open_state_not_reflected" : "open_state_marker_missing");
+        probe.stateApplied = false;
+        probe.supported = false;
+        break;
       }
-      if (
-        !openAfter.expanded &&
-          !openAfter.controls &&
-          !openAfter.detailsOpen &&
-        !controlState.hasExpanded &&
-        !controlState.hasDataOpen &&
-        !openAfter.dataOpen
-        ) {
-        warnings.push("open_state_marker_missing");
-      }
+      probe.stateApplied = true;
       break;
     case "disabled":
-      if (["text", "search", "password", "email"].includes(controlState.type)) {
+      if (!stateCapable) {
         warnings.push("disabled_not_applicable");
+        probe.supported = false;
+        break;
+      }
+      if (!controlState.canNativeDisable && !controlState.canAriaDisable) {
+        warnings.push("disabled_not_applicable");
+        probe.supported = false;
         break;
       }
       if (controlState.isDisabled) {
         warnings.push("disabled_state_already_disabled");
+        probe.stateApplied = true;
         break;
       }
-      const nodeCouldDisable = await locator
-        .evaluate((node) => {
-          if (
-            node instanceof HTMLInputElement ||
-            node instanceof HTMLTextAreaElement ||
-            node instanceof HTMLSelectElement ||
-            node instanceof HTMLButtonElement
-          ) {
-            const element = node as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement;
-            element.setAttribute("data-uh-disabled-draft", element.hasAttribute("disabled") ? "on" : "off");
-            element.setAttribute("disabled", "");
-            element.setAttribute("aria-disabled", "true");
-            return true;
-          }
-          if (node instanceof Element) {
-            node.setAttribute("aria-disabled", "true");
-            node.setAttribute("data-uh-disabled-draft", "true");
-            return true;
-          }
-          return false;
-        })
-        .catch(() => false);
-      if (!nodeCouldDisable) {
-        warnings.push("disabled_not_applicable");
+      const disabledProbe = await locator
+        .evaluate(
+          (node, payload: { canNative: boolean; canAria: boolean }) => {
+            const hasDisabled = payload.canNative && node instanceof Element && node.hasAttribute("disabled");
+            const ariaDisabled =
+              payload.canAria && node instanceof Element ? node.getAttribute("aria-disabled") === "true" || node.getAttribute("aria-disabled") === "1" : false;
+            const className = (node.getAttribute("class") || "").toLowerCase();
+            const disabledClass = /\b(?:disabled|is-disabled|state-disabled|aria-disabled)\b/.test(className);
+            const dataState = node.getAttribute("data-state");
+            const dataDisabled = node.getAttribute("data-disabled");
+            const hasDisabledSignal = Boolean(hasDisabled || ariaDisabled || disabledClass || dataState === "disabled" || dataDisabled === "true");
+            return {
+              hasDisabledSignal,
+              hasDisabled,
+              ariaDisabled,
+              disabledClass,
+              dataState,
+              dataDisabled,
+            };
+          },
+          {
+            canNative: controlState.canNativeDisable,
+            canAria: controlState.canAriaDisable,
+          },
+        )
+        .catch(() => null);
+      if (!disabledProbe) {
+        warnings.push("disabled_probe_failed");
+        probe.supported = false;
+        break;
       }
-      await page.waitForTimeout(60).catch(() => {});
+      if (disabledProbe.hasDisabledSignal) {
+        probe.stateApplied = true;
+        break;
+      }
+
+      const simulated = await locator
+        .evaluate(
+          (node, payload: { canNative: boolean; canAria: boolean }) => {
+            if (!(node instanceof HTMLElement)) return null;
+            const canNative = payload.canNative && "disabled" in node;
+            const canAria = payload.canAria;
+            const element = node;
+            const hadDisabled = element.hasAttribute("disabled");
+            const hadAriaDisabled = element.getAttribute("aria-disabled");
+            const hadDataDisabled = element.getAttribute("data-disabled");
+            const hadDataState = element.getAttribute("data-state");
+            const hadDisabledClass = element.classList.contains("is-disabled");
+            const hadPointerEvents = element.style.pointerEvents;
+            const hadCursor = element.style.cursor;
+            if (canNative && !hadDisabled) {
+              (element as HTMLInputElement).setAttribute("disabled", "true");
+              (element as HTMLInputElement).disabled = true;
+              return {
+                applied: true,
+                strategy: "native",
+                hadDisabled,
+                hadAriaDisabled,
+                hadDataDisabled,
+                hadDataState,
+                hadDisabledClass,
+                hadPointerEvents,
+                hadCursor,
+              };
+            }
+            if (canAria) {
+              element.setAttribute("aria-disabled", "true");
+              element.style.pointerEvents = "none";
+              return {
+                applied: true,
+                strategy: "aria",
+                hadDisabled,
+                hadAriaDisabled,
+                hadDataDisabled,
+                hadDataState,
+                hadDisabledClass,
+                hadPointerEvents,
+                hadCursor,
+              };
+            }
+            element.setAttribute("data-state", "disabled");
+            element.setAttribute("data-disabled", "true");
+            element.setAttribute("aria-disabled", "true");
+            element.style.pointerEvents = "none";
+            if (!hadDisabledClass) element.classList.add("is-disabled");
+            return {
+              applied: true,
+              strategy: "data",
+              hadDisabled,
+              hadAriaDisabled,
+              hadDataDisabled,
+              hadDataState,
+              hadDisabledClass,
+              hadPointerEvents,
+              hadCursor,
+            };
+          },
+          {
+            canNative: controlState.canNativeDisable,
+            canAria: controlState.canAriaDisable,
+          },
+        )
+        .catch(() => null);
+      if (!simulated || !simulated.applied) {
+        warnings.push("disabled_state_not_reproducible");
+        probe.supported = false;
+        break;
+      }
+      captureDisabledRestore.fn = async () => {
+        try {
+          await locator.evaluate(
+            (node, payload) => {
+              if (!(node instanceof HTMLElement)) return;
+              if (payload.strategy === "native") {
+                (node as HTMLInputElement).disabled = false;
+                if (!payload.hadDisabled) node.removeAttribute("disabled");
+                if (payload.hadAriaDisabled == null) {
+                  node.removeAttribute("aria-disabled");
+                } else {
+                  node.setAttribute("aria-disabled", payload.hadAriaDisabled);
+                }
+              } else {
+                if (payload.hadAriaDisabled == null) node.removeAttribute("aria-disabled");
+                else node.setAttribute("aria-disabled", payload.hadAriaDisabled);
+                if (payload.hadDataDisabled == null) node.removeAttribute("data-disabled");
+                else node.setAttribute("data-disabled", payload.hadDataDisabled);
+                if (payload.hadDataState == null) node.removeAttribute("data-state");
+                else node.setAttribute("data-state", payload.hadDataState);
+                if (!payload.hadDisabledClass) node.classList.remove("is-disabled");
+              }
+              if (payload.hadPointerEvents == null || payload.hadPointerEvents === "") node.style.removeProperty("pointer-events");
+              else node.style.pointerEvents = payload.hadPointerEvents;
+              if (payload.hadCursor == null || payload.hadCursor === "") node.style.removeProperty("cursor");
+              else node.style.cursor = payload.hadCursor;
+            },
+            {
+              strategy: simulated.strategy,
+              hadDisabled: simulated.hadDisabled,
+              hadAriaDisabled: simulated.hadAriaDisabled,
+              hadDataDisabled: simulated.hadDataDisabled,
+              hadDataState: simulated.hadDataState,
+              hadDisabledClass: simulated.hadDisabledClass,
+              hadPointerEvents: simulated.hadPointerEvents,
+              hadCursor: simulated.hadCursor,
+            },
+          );
+        } catch {}
+      };
+      const postProbe = await locator
+        .evaluate(
+          (node, payload: { canNative: boolean; canAria: boolean }) => {
+            const hasDisabled = payload.canNative && node instanceof Element && node.hasAttribute("disabled");
+            const ariaDisabled = payload.canAria && node instanceof Element ? node.getAttribute("aria-disabled") === "true" || node.getAttribute("aria-disabled") === "1" : false;
+            const className = (node.getAttribute("class") || "").toLowerCase();
+            const disabledClass = /\b(?:disabled|is-disabled|state-disabled|aria-disabled)\b/.test(className);
+            const dataState = node.getAttribute("data-state");
+            const dataDisabled = node.getAttribute("data-disabled");
+            const hasDisabledSignal = Boolean(hasDisabled || ariaDisabled || disabledClass || dataState === "disabled" || dataDisabled === "true");
+            return hasDisabledSignal;
+          },
+          {
+            canNative: controlState.canNativeDisable,
+            canAria: controlState.canAriaDisable,
+          },
+        )
+        .catch(() => false);
+      if (!postProbe) {
+        warnings.push("disabled_state_not_reflected");
+        if (captureDisabledRestore.fn) {
+          await captureDisabledRestore.fn().catch(() => {});
+          captureDisabledRestore.fn = undefined;
+        }
+        probe.stateApplied = false;
+        probe.supported = false;
+        break;
+      }
+      warnings.push("disabled_state_simulated");
+      probe.stateApplied = true;
+      break;
       break;
     case "loading":
+      if (!stateCapable) {
+        warnings.push("loading_not_applicable");
+        probe.supported = false;
+        break;
+      }
       if (controlState.isDisabled) {
         warnings.push("loading_skipped_disabled");
-      }
-      if (controlState.ariaBusy) {
-        warnings.push("loading_already_busy");
+        probe.supported = false;
+        break;
       }
       const loadingProbe = await locator
         .evaluate((node) => {
           const candidates = [
             node,
             node.closest("button, a, summary, [role='button'], [role='tab'], [role='menuitem'], [role='switch'], [role='checkbox'], [role='radio']"),
+            node.closest("[role='status'], [role='progressbar'], [aria-live]"),
             node.parentElement,
           ].filter(Boolean) as Element[];
+
+          const nearby = Array.from(
+            node.querySelectorAll?.("[aria-busy], [data-loading], [data-busy], [data-state], [data-status], [role='progressbar'], [aria-live], .loading, .spinner, .skeleton, .progress, .busy") || [],
+          )
+            .map((candidate) => `${candidate.className || ""} ${candidate.getAttribute("aria-busy") || ""} ${candidate.getAttribute("data-state") || ""}`)
+            .join(" | ");
 
           const signals = candidates
             .map((candidate) => {
@@ -3367,34 +3820,42 @@ async function applyInteractionState(
                 candidate.getAttribute("data-state"),
                 candidate.getAttribute("data-status"),
                 candidate.getAttribute("data-busy"),
-                candidate.getAttribute("aria-live"),
               ].join(" ");
-              const hasClass = /loading|spinner|skeleton|progress|busy/i.test(candidate.className || "");
-              return `${busy} ${hasClass ? "1" : "0"}`;
+              const className = candidate.className || "";
+              return `${busy} ${className}`;
             })
             .join(" | ");
 
-          const hasIndicator = signals.toLowerCase().includes("true") || signals.includes("1") || signals.includes("loading") || signals.includes("spinner");
+          const state = `${signals} ${nearby}`.toLowerCase();
+          const hasIndicator = /(true|loading|busy|spinner|skeleton|progress|shimmer)/i.test(state);
           return {
             hasIndicator,
-            details: signals,
+            details: state,
           };
         })
         .catch(() => ({ hasIndicator: false, details: "" as string }));
 
-      if (!loadingProbe.hasIndicator) {
+      if (loadingProbe.hasIndicator) {
+        if (controlState.ariaBusy) {
+          warnings.push("loading_already_busy");
+        }
+        probe.stateApplied = true;
+      } else {
         warnings.push("loading_no_indicator");
+        probe.supported = false;
       }
       break;
     case "error":
-      if (controlState.ariaPressed === "false") {
-        warnings.push("error_state_not_applicable");
+      if (!stateCapable) {
+        warnings.push("error_not_applicable");
+        probe.supported = false;
+        break;
       }
       const errorProbe = await locator
         .evaluate((node) => {
           const candidates = [
             node,
-            node.closest("button, a, summary, [role='button'], [role='tab'], [role='menuitem'], [role='switch'], [role='checkbox'], [role='radiogroup']"),
+            node.closest("form, [role='form'], [role='status'], [role='alert'], [role='group']"),
             node.parentElement,
           ].filter(Boolean) as Element[];
 
@@ -3402,30 +3863,48 @@ async function applyInteractionState(
             .map((candidate) =>
               [
                 candidate.getAttribute("data-error"),
+                candidate.getAttribute("data-status"),
                 candidate.getAttribute("aria-invalid"),
-                candidate.getAttribute("aria-describedby"),
                 candidate.getAttribute("role"),
-                candidate.getAttribute("class"),
                 candidate.getAttribute("data-state"),
+                candidate.className,
               ].join(" "),
             )
-            .join(" | ");
+            .join(" | ")
+            .toLowerCase();
 
-          const hasIndicator = /error|invalid|danger|failed|warn/i.test(stateText);
-          return { hasIndicator, stateText };
+          const nearbyText = Array.from(
+            node.querySelectorAll?.("[role='alert'], [role='status'], [aria-live], .error, .invalid, .danger, .warn") || [],
+          )
+            .map((candidate) => `${candidate.className} ${candidate.textContent || ""}`)
+            .join(" | ")
+            .toLowerCase();
+
+          const hasIndicator = /(error|invalid|danger|warn|failed|aria-invalid|data-error)/i.test(`${stateText} ${nearbyText}`);
+          return { hasIndicator, stateText, nearbyText };
         })
-        .catch(() => ({ hasIndicator: false, stateText: "" as string }));
+        .catch(() => ({ hasIndicator: false, stateText: "", nearbyText: "" as string }));
 
       if (!errorProbe.hasIndicator) {
         warnings.push("error_no_indicator");
+        probe.supported = false;
+        break;
       }
+      probe.stateApplied = true;
       break;
     default:
       break;
   }
 
   await page.waitForTimeout(140);
-  return { warnings, skipped: false };
+  const shouldSkip = probe.supported === false;
+  probe.warnings = warnings;
+  return {
+    warnings,
+    skipped: shouldSkip,
+    probe,
+    restore: captureDisabledRestore.fn,
+  };
 }
 
 function buildComponentRecipe(groups: Record<string, NodeSample[]>): Record<string, ComponentRecipe> {
@@ -3556,7 +4035,7 @@ export function buildComponentRecipeWithState(
         source: {
           route: stateCapture.stateTargetMeta?.route || "",
           viewport: stateCapture.stateTargetMeta?.viewport || "",
-          theme: stateCapture.stateTargetMeta?.theme,
+          theme: stateCapture.stateTargetMeta?.theme as ThemeMode | undefined,
           screenshot: stateCapture.screenshot || "",
           selector: stateCapture.stateTargetMeta?.selector || stateCapture.targetSelector || "",
           locator: stateCapture.stateTargetMeta?.locator || stateCapture.targetSelector || "",
@@ -3635,9 +4114,16 @@ async function makeRouteCapture(
 ): Promise<RouteViewportCapture> {
   const settling = await waitForStable(page, waitConfig);
   const stateWarnings: string[] = [];
+  const shouldThrottleStateCapture =
+    !settling.stable &&
+    settling.unstableFrames > Math.max(2, Math.floor(waitConfig.mutationStabilityFrames * 0.6));
   const stateCaptureBudget = Math.max(1, settling.stable ? interactionBudget : Math.max(1, Math.floor(interactionBudget * 0.6)));
+  const effectiveStateCaptureBudget = shouldThrottleStateCapture ? 0 : stateCaptureBudget;
   if (!settling.stable) {
     stateWarnings.push(`route-not-stable-${route}-${viewport.name}-${theme}`);
+  }
+  if (shouldThrottleStateCapture) {
+    stateWarnings.push(`state_capture_throttled route=${route} viewport=${viewport.name} theme=${theme}`);
   }
 
   const captureNamePrefix = captureId(route, viewport, theme, "route", "default");
@@ -3678,7 +4164,12 @@ async function makeRouteCapture(
   }
 
   const stateCaptures: RouteViewportCapture["stateCaptures"] = [];
-  const defaultSignature = styleFingerprintFromSamples(samples);
+  const defaultSignature = styleFingerprintFromSamples(samples, {
+    route,
+    theme,
+    viewport,
+    routeDepth,
+  });
   stateCaptures.push({
     state: "default",
     screenshot: defaultShot,
@@ -3694,8 +4185,10 @@ async function makeRouteCapture(
     routeDepth,
   });
   const targets = await listInteractiveTargets(page);
-  const capped = targets.slice(0, Math.max(1, stateCaptureBudget));
-  const stateSequence = SUPPORTED_INTERACTION_STATES.slice(0, Math.max(1, stateBudget));
+  const effectiveStateCaptureBudget = shouldThrottleStateCapture ? 0 : stateCaptureBudget;
+  const capped = targets.slice(0, Math.max(0, effectiveStateCaptureBudget));
+  const stateSequence = SUPPORTED_INTERACTION_STATES.slice(0, Math.max(0, shouldThrottleStateCapture ? 0 : stateBudget));
+  const routeStateWarningBudget = Math.max(1, Math.min(20, stateCaptureBudget));
 
   for (const state of stateSequence) {
     for (const target of capped) {
@@ -3708,15 +4201,16 @@ async function makeRouteCapture(
       });
       const resolved = await resolveInteractiveTarget(page, target, route, viewport, state);
       const stateTargetMeta = {
-        selector: target.tag || "",
+        selector: resolved.selector || target.tag || "",
         locator: resolved.selector,
         found: resolved.found,
         strategy: resolved.strategy,
         attempts: resolved.attempts,
+        state,
         resolved: resolved.resolved,
         route,
         viewport: `${viewport.name}:${viewport.width}x${viewport.height}`,
-        recoverable: true,
+        recoverable: resolved.resolved?.recoverable,
         tag: target.tag,
         role: target.role,
         type: target.type,
@@ -3740,6 +4234,8 @@ async function makeRouteCapture(
           changedPropertiesAdded: [],
           changedPropertiesRemoved: [],
           stateTargetMeta,
+          targetFound: false,
+          targetCaptureAttempts: resolved.attempts.length,
           targetFingerprint: {
             before: defaultSignature,
             after: defaultSignature,
@@ -3754,7 +4250,7 @@ async function makeRouteCapture(
             strategy: resolved.strategy,
             locator: resolved.selector,
             attempts: [...resolved.attempts],
-            recoverable: true,
+            recoverable: resolved.resolved?.recoverable,
             confidence: resolved.resolved?.confidence,
           },
           targetProvenance: [...stateProvenance],
@@ -3763,17 +4259,25 @@ async function makeRouteCapture(
         continue;
       }
 
-      const before = resolved.found ? await nodeStyleSignatureBySelector(page, resolved.selector, cleaningContext.profile).catch(() => null) : null;
+      const before = resolved.found ? await resolveStyleSignatureByLocator(page, resolved, cleaningContext.profile).catch(() => null) : null;
       const interaction = await applyInteractionState(page, state, resolved).catch((error) => {
         stateWarnings.push(`interaction_error route=${route} state=${state} target=${resolved.selector} ${String(error)}`);
-        return { warnings: ["interaction_error"], skipped: true };
+        return {
+          warnings: ["interaction_error"],
+          skipped: true,
+          probe: {
+            supported: false,
+            stateApplied: false,
+            locatorRecovered: false,
+            warnings: ["interaction_error"],
+          },
+        };
       });
       if (interaction?.skipped) {
         stateWarnings.push(`interaction_skipped route=${route} state=${state} target=${resolved.selector} ${interaction?.warnings[0] || ""}`.trim());
       } else if (interaction?.warnings?.length) {
         stateWarnings.push(...interaction.warnings.map((warning) => `state_${state}_${warning}:${target.tag}`));
       }
-
       await page.waitForTimeout(waitConfig.settleMs);
       const shot = screenshotPath(snapshotId, `${captureNamePrefix}_${state}_${target.tag}`);
       const shotSucceeded = await page.screenshot({ path: shot, fullPage: true }).then(() => true).catch(() => false);
@@ -3782,7 +4286,7 @@ async function makeRouteCapture(
       }
       const shotPath = shotSucceeded ? shot : defaultScreenshotTaken ? defaultShot : "";
 
-      const after = resolved.found ? await nodeStyleSignatureBySelector(page, resolved.selector, cleaningContext.profile).catch(() => null) : null;
+      const after = resolved.found ? await resolveStyleSignatureByLocator(page, resolved, cleaningContext.profile).catch(() => null) : null;
       const diff = changedPropertiesFromSignatures(before || "", after || "");
       const deltas = signatureValueDeltas(before || "", after || "");
       const stateCapture: RouteViewportCapture["stateCaptures"][number] = {
@@ -3793,13 +4297,15 @@ async function makeRouteCapture(
         changedProperties: diff.changed,
         changedPropertiesAdded: diff.added,
         changedPropertiesRemoved: diff.removed,
+        targetFound: true,
+        targetCaptureAttempts: resolved.attempts.length,
         stateTargetMeta,
         stateTargetResolved: {
           found: true,
           strategy: resolved.strategy,
           locator: resolved.selector,
           attempts: [...resolved.attempts],
-          recoverable: true,
+          recoverable: resolved.resolved?.recoverable,
           confidence: resolved.resolved?.confidence,
         },
         targetFingerprint: {
@@ -3808,13 +4314,20 @@ async function makeRouteCapture(
         },
         targetStyleDelta: Object.keys(deltas).length ? deltas : undefined,
         nodeSignatures: {
-          [target.uid]: before || "",
+          [`${target.uid}:before`]: before || "",
           [`${target.uid}:after`]: after || "",
         },
         targetProvenance: [...stateProvenance],
         provenanceWarnings: interaction?.warnings || [],
       };
       stateCaptures.push(stateCapture);
+
+      if (stateWarnings.length > routeStateWarningBudget) {
+        stateWarnings.push(`state-warning-limit-reached route=${route} state=${state} target=${target.tag}`);
+        if (interaction && !interaction.skipped) {
+          stateWarnings.push("state_warning_budget_hit");
+        }
+      }
 
       if (interaction?.skipped) {
         continue;
@@ -3842,6 +4355,9 @@ async function makeRouteCapture(
         },
       });
 
+      if ("restore" in interaction && typeof (interaction as any).restore === "function") {
+        await (interaction as any).restore().catch(() => {});
+      }
       await page.keyboard.press("Escape").catch(() => {});
       await page.mouse.move(0, 0).catch(() => {});
 
@@ -3881,6 +4397,8 @@ async function makeRouteCapture(
     screenshotHash,
     capturedAt: new Date().toISOString(),
     nodeSamples: samples,
+    interactionBudgetUsed: effectiveStateCaptureBudget,
+    stateCaptureBudget: effectiveStateCaptureBudget,
     stateCaptureCount: stateCaptures.length,
     stateWarnings: stateWarnings.length ? stateWarnings : undefined,
   };
@@ -4370,6 +4888,19 @@ export async function crawlAndCapture(input: ExtractDesignSystemInput): Promise<
     skippedDuplicate: 0,
     skippedByBudget: 0,
     unstableSettling: 0,
+    renderedByStatus: {
+      default: 0,
+      skipped: 0,
+      failed: 0,
+      unstable: 0,
+    },
+    renderedByTheme: {
+      light: 0,
+      dark: 0,
+      auto: 0,
+    },
+    renderedByViewport: {},
+    filteredByDuplicateSignature: 0,
     warnings: [],
   };
 
@@ -4398,56 +4929,75 @@ export async function crawlAndCapture(input: ExtractDesignSystemInput): Promise<
           const page = await context.newPage();
 
           try {
-            try {
-              await page.goto(route, { timeout: 90_000, waitUntil: "domcontentloaded" }).catch(async () => {
-                await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
-              });
+            const routeStartTs = Date.now();
+            await page.goto(route, { timeout: 90_000, waitUntil: "domcontentloaded" }).catch(async () => {
+              await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+            });
 
-              const capture = await makeRouteCapture(
-                snapshotId,
-                page,
-                routeBase,
-                theme,
-                viewport,
-                depth,
-                maxSamplesPerViewport,
-                sampleStride,
-                interactionBudget,
-                stateBudget,
-                waitConfig,
-                cleaningContext,
-                cleaningReport,
-              );
+            const capture = await makeRouteCapture(
+              snapshotId,
+              page,
+              routeBase,
+              theme,
+              viewport,
+              depth,
+              maxSamplesPerViewport,
+              sampleStride,
+              interactionBudget,
+              stateBudget,
+              waitConfig,
+              cleaningContext,
+              cleaningReport,
+            );
 
-              if (seenFingerprints.has(capture.routeFingerprint || `${capture.layoutFingerprint}-${route}-${viewport.width}x${viewport.height}-${theme}`)) {
-                routeSummary.skippedDuplicate += 1;
-                continue;
-              }
+            if (seenFingerprints.has(capture.routeFingerprint || `${capture.layoutFingerprint}-${route}-${viewport.width}x${viewport.height}-${theme}`)) {
+              routeSummary.skippedDuplicate += 1;
+              routeSummary.filteredByDuplicateSignature = (routeSummary.filteredByDuplicateSignature ?? 0) + 1;
+              routeSummary.renderedByStatus!.skipped += 1;
+              routeSummary.warnings?.push(`duplicate-fingerprint route=${route} theme=${theme} viewport=${viewport.name}`);
+              continue;
+            }
 
-              seenFingerprints.add(capture.routeFingerprint || `${capture.layoutFingerprint}-${route}-${viewport.width}x${viewport.height}-${theme}`);
-              captures.push(capture);
-              routeSummary.rendered += 1;
-              if (capture.stateWarnings?.length) routeSummary.unstableSettling += 1;
+            seenFingerprints.add(capture.routeFingerprint || `${capture.layoutFingerprint}-${route}-${viewport.width}x${viewport.height}-${theme}`);
+            captures.push(capture);
+            routeSummary.rendered += 1;
+            routeSummary.renderedByTheme[theme] = (routeSummary.renderedByTheme[theme] || 0) + 1;
+            const viewportKey = `${viewport.width}x${viewport.height}`;
+            routeSummary.renderedByViewport[viewportKey] = (routeSummary.renderedByViewport[viewportKey] || 0) + 1;
+            routeSummary.renderedByStatus.default += 1;
+            if (capture.stateWarnings?.length) {
+              routeSummary.unstableSettling += 1;
+              routeSummary.renderedByStatus.unstable += 1;
+              routeSummary.warnings?.push(`unstable route=${route} theme=${theme} viewport=${viewport.name}`);
+            }
 
-              const capturedIcons = await harvestIconsForRoute(snapshotId, page, routeBase, iconCaptureProfile, iconAccumulator);
-              iconEvidence.push(...capturedIcons);
+            const captureMs = Date.now() - routeStartTs;
+            if (captureMs > DEFAULT_WAIT.networkQuietMs * 3 + DEFAULT_WAIT.settleMs + 200) {
+              routeSummary.warnings?.push(`long_capture_ms route=${route} theme=${theme} viewport=${viewport.name} ms=${captureMs}`);
+            }
 
-              if (depth < routeDepth) {
-                const discovered = await discoverSameOriginLinks(page, routeBase, depth, routeDepth);
-                for (const href of discovered) {
-                  if (visited.size >= sameOriginPages) {
-                    routeSummary.skippedByBudget += 1;
-                    break;
-                  }
-                  if (!visited.has(href)) {
-                    visited.add(href);
-                    queue.push({ route: href, depth: depth + 1 });
-                  }
+            const capturedIcons = await harvestIconsForRoute(snapshotId, page, routeBase, iconCaptureProfile, iconAccumulator);
+            iconEvidence.push(...capturedIcons);
+
+            if (depth < routeDepth) {
+              const discovered = await discoverSameOriginLinks(page, routeBase, depth, routeDepth);
+              for (const href of discovered) {
+                if (visited.size >= sameOriginPages) {
+                  routeSummary.skippedByBudget += 1;
+                  routeSummary.filteredByRouteBudget = (routeSummary.filteredByRouteBudget || 0) + 1;
+                  break;
+                }
+                if (!visited.has(href)) {
+                  visited.add(href);
+                  queue.push({ route: href, depth: depth + 1 });
                 }
               }
-            } catch (error) {
-              (routeSummary.warnings ??= []).push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name} ${String(error)}`);
             }
+          } catch (error) {
+            routeSummary.renderedByStatus.failed += 1;
+            routeSummary.warnings?.push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name}`);
+            (routeSummary.warnings ??= []).push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name} ${String(error)}`);
+          }
           } finally {
             await context.close();
           }
