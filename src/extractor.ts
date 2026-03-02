@@ -4900,7 +4900,7 @@ export async function crawlAndCapture(input: ExtractDesignSystemInput): Promise<
 
   const browser = await chromium.launch({ headless: true });
   try {
-    while (queue.length > 0 && visited.size < sameOriginPages) {
+    while (queue.length > 0 && visited.size <= sameOriginPages) {
       const item = queue.shift();
       if (!item) break;
       const { route, depth } = item;

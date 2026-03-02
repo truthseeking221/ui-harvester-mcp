@@ -135,7 +135,7 @@ export function exportTailwindV4Theme(snapshot: UiSnapshotManifest): string {
   });
 
   snapshot.tokens.core.spacing.slice(0, 64).forEach((value, idx) => {
-    const key = idx === 0 ? "0" : idx === 1 ? "1" : String(idx + 1);
+    const key = String(idx);
     out.push(`  --spacing-${key}: ${value}px;`);
   });
 
@@ -1109,7 +1109,7 @@ export function exportThemeObject(snapshot: UiSnapshotManifest, targetStack: Sna
         h3: textStyleToTheme(textStyles[2]),
         body1: textStyleToTheme(textStyles[3]),
         body2: textStyleToTheme(textStyles[4]),
-        button: textStyleToTheme(textStyles[0]),
+        button: textStyleToTheme(textStyles[5] ?? textStyles[3]),
       },
       shape: {
         borderRadius: snapshot.tokens.core.radii[0] || "8px",

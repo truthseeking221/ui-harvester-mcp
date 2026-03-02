@@ -750,10 +750,10 @@ server.prompt(
           type: "text",
           text:
             `1) Read ui://snapshots/${snapshotId}/manifest\n`
-            + "2) Run export_design_package({snapshotId}).\n"
-            + "3) Read ui://snapshots/${snapshotId}/artifacts/manifest.\n"
+            + `2) Run export_design_package({snapshotId}).\n`
+            + `3) Read ui://snapshots/${snapshotId}/artifacts/manifest.\n`
             + (includeFigmaBlueprint
-              ? "4) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-variables\n5) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-styles\n6) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-plan (recommended executable import plan)\n7) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-blueprint\n"
+              ? `4) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-variables\n5) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-styles\n6) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-plan (recommended executable import plan)\n7) Read ui://snapshots/${snapshotId}/artifacts/universal-figma-blueprint\n`
               : "")
             + "8) For southleft/figma-console-mcp, use the figma payload files as direct input and apply into a dedicated Figma file."
             + (includeFigmaBlueprint ? " Keep source route/component naming and aliases in sync for pixel-first parity." : ""),

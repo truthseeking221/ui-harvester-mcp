@@ -387,7 +387,13 @@ async function captureValidationShot(
   const targetPath = path.join(snapshotDir(snapshotId), "validation", "shots");
   await fs.mkdir(targetPath, { recursive: true });
   const screenshotPath = path.join(targetPath, `${captureId}-${state}.png`);
-  const targetUrl = new URL(targetRoute, projectPreviewUrl).toString();
+  let targetUrl: string;
+  try {
+    const sourceParsed = new URL(targetRoute);
+    targetUrl = new URL(sourceParsed.pathname + sourceParsed.search + sourceParsed.hash, projectPreviewUrl).toString();
+  } catch {
+    targetUrl = new URL(targetRoute, projectPreviewUrl).toString();
+  }
 
   try {
     await page.goto(targetUrl, { timeout: 90_000, waitUntil: "domcontentloaded" }).catch(async () => {
