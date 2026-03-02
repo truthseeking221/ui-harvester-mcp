@@ -19,6 +19,7 @@ npm install
 npm run build
 npx playwright install chromium
 ```
+
 ### Browser requirement
 
 - `crawl_and_capture` and `extract_design_system` run in a local Playwright Chromium runtime.
@@ -119,7 +120,10 @@ If you do not want to prebuild, replace `dist/index.js` with the TypeScript dev 
   "mcpServers": {
     "ui-harvester-mcp": {
       "command": "node",
-      "args": ["/ABSOLUTE/PATH/to/UI Harvester MCP/node_modules/.bin/tsx", "/ABSOLUTE/PATH/to/UI Harvester MCP/src/index.ts"]
+      "args": [
+        "/ABSOLUTE/PATH/to/UI Harvester MCP/node_modules/.bin/tsx",
+        "/ABSOLUTE/PATH/to/UI Harvester MCP/src/index.ts"
+      ]
     }
   }
 }
