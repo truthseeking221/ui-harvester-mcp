@@ -2774,10 +2774,6 @@ function buildDescriptorSelectorCandidates(target: InteractiveTarget): string[] 
     const sanitizedText = target.text.slice(0, 90).replace(/["']/g, '');
     candidates.add(`text:${sanitizedText}`);
   }
-  if (target.tag) {
-    if (target.role) candidates.add(`${target.tag}[role="${CSS.escape(target.role)}"]`);
-    if (target.type) candidates.add(`${target.tag}[type="${CSS.escape(target.type)}"]`);
-  }
   if (target.type) {
     candidates.add(`[type="${CSS.escape(target.type)}"]`);
     candidates.add(`${target.tag || '*'}[type='${CSS.escape(target.type)}']`);
@@ -2805,47 +2801,51 @@ async function resolveLocatorFromStrategy(
   const normalizedBbox = selector?.startsWith('bbox:') ? selector : '';
   const candidate: string = selector;
 
-  try {
-    if (strategy === 'role-text' && normalizedText) {
-      const at = selector.replace(/^role-text:/, '');
-      const [rolePart, textPart] = at.split('|', 2);
-      const normalizedRole = rolePart?.replace(/^role=/, '').toLowerCase();
-      const normalizedInputText = decodeURIComponent(textPart || '').toLowerCase();
-      if (!normalizedRole || !normalizedInputText) return null;
-      const matchedByRole = Array.from(
-        document.querySelectorAll(`*[role='${normalizedRole}'], [role='${normalizedRole}']`)
-      ) as Element[];
-      if (!matchedByRole.length) return null;
-      const withText = matchedByRole
-        .map((node) => ({
-          node,
-          text: (node.textContent || '').toLowerCase(),
-        }))
-        .find((entry) => entry.text.includes(normalizedInputText));
-      if (!withText) return null;
-      const selectedNode = withText.node;
-      const snapshot =
-        selectedNode instanceof Element
-          ? selectedNode.id
-            ? `${selectedNode.tagName.toLowerCase()}#${CSS.escape(selectedNode.id)}`
-            : (() => {
-                const classes = (selectedNode.getAttribute('class') || '')
-                  .trim()
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .slice(0, 2)
-                  .map((token) => `.${CSS.escape(token)}`)
-                  .join('');
-                return classes ? `${selectedNode.tagName.toLowerCase()}${classes}` : selectedNode.tagName.toLowerCase();
-              })()
-          : '';
-      return {
-        found: true,
-        locator: snapshot,
-        attempts: ['role-text'],
-        confidence: 0.74,
-      };
-    }
+  return new Promise(async (resolve) => {
+    try {
+      if (strategy === "role-text" && selector?.startsWith("role-text:")) {
+        const at = selector.replace(/^role-text:/, "");
+        const [rolePart, textPart] = at.split("|", 2);
+        const normalizedRole = rolePart?.replace(/^role=/, "").toLowerCase();
+        const normalizedInputText = decodeURIComponent(textPart || "").toLowerCase();
+        if (!normalizedRole || !normalizedInputText) return resolve(null);
+        const snapshot = await page
+          .evaluate(
+            (input) => {
+              const matchedByRole = Array.from(
+                document.querySelectorAll(`*[role='${input.role}'], [role='${input.role}']`),
+              ) as Element[];
+              if (!matchedByRole.length) return null;
+              const withText = matchedByRole
+                .map((node) => ({
+                  node,
+                  text: (node.textContent || "").toLowerCase(),
+                }))
+                .find((entry) => entry.text.includes(input.text));
+              if (!withText) return null;
+              const selectedNode = withText.node;
+              if (!(selectedNode instanceof Element)) return null;
+              if (selectedNode.id) return `${selectedNode.tagName.toLowerCase()}#${CSS.escape(selectedNode.id)}`;
+              const classes = (selectedNode.getAttribute("class") || "")
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((token) => `.${CSS.escape(token)}`)
+                .join("");
+              return classes ? `${selectedNode.tagName.toLowerCase()}${classes}` : selectedNode.tagName.toLowerCase();
+            },
+            { role: normalizedRole, text: normalizedInputText },
+          )
+          .catch(() => null);
+        if (!snapshot) return resolve(null);
+        return resolve({
+          found: true,
+          locator: snapshot,
+          attempts: ["role-text"],
+          confidence: 0.74,
+        });
+      }
 
     if (strategy === 'text' && normalizedText) {
       const matched = page.getByText(normalizedText, { exact: false });
@@ -4046,8 +4046,7 @@ async function applyInteractionState(
       warnings.push('disabled_state_simulated');
       probe.stateApplied = true;
       break;
-    }
-    case 'loading': {
+    case "loading":
       if (!stateCapable) {
         warnings.push('loading_not_applicable');
         probe.supported = false;
@@ -4666,10 +4665,6 @@ async function makeRouteCapture(
       }
       await page.keyboard.press('Escape').catch(() => {});
       await page.mouse.move(0, 0).catch(() => {});
-
-      if (!interaction?.skipped) {
-        continue;
-      }
     }
   }
 

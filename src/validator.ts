@@ -44,11 +44,9 @@ function routeCandidates(args: ValidateInput, projectPreviewUrl: string): string
   return args.routes
     .map((item) => {
       const normalized = item.trim();
-      if (!normalized) return '';
-      if (item.includes('://')) return item;
-      return normalized.startsWith('/')
-        ? new URL(normalized, projectPreviewUrl).toString()
-        : new URL(`/${normalized}`, projectPreviewUrl).toString();
+      if (!normalized) return "";
+      if (normalized.includes("://")) return normalized;
+      return normalized.startsWith("/") ? new URL(normalized, projectPreviewUrl).toString() : new URL(`/${normalized}`, projectPreviewUrl).toString();
     })
     .filter((route) => !!route);
 }
@@ -424,8 +422,8 @@ async function captureValidationShot(
   const screenshotPath = path.join(targetPath, `${captureId}-${state}.png`);
   let targetUrl: string;
   try {
-    const parsed = new URL(targetRoute);
-    targetUrl = new URL(parsed.pathname + parsed.search + parsed.hash, projectPreviewUrl).toString();
+    const sourceParsed = new URL(targetRoute);
+    targetUrl = new URL(sourceParsed.pathname + sourceParsed.search + sourceParsed.hash, projectPreviewUrl).toString();
   } catch {
     targetUrl = new URL(targetRoute, projectPreviewUrl).toString();
   }
