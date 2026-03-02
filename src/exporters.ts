@@ -88,7 +88,7 @@ export function exportCssVariables(snapshot: UiSnapshotManifest): string {
   lines.push("  --surface-card: " + (snapshot.tokens.semantic.surface.card || "#f9fafb") + ";");
 
   snapshot.tokens.core.spacing.slice(0, 80).forEach((value, index) => {
-    const key = index === 0 ? "0" : String(index + 1);
+    const key = String(index);
     lines.push(`  --spacing-${key}: ${value}px;`);
   });
 

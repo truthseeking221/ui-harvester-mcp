@@ -38,7 +38,7 @@ function routeCandidates(args: ValidateInput, projectPreviewUrl: string): string
     .map((item) => {
       const normalized = item.trim();
       if (!normalized) return "";
-      if (item.includes("://")) return item;
+      if (normalized.includes("://")) return normalized;
       return normalized.startsWith("/") ? new URL(normalized, projectPreviewUrl).toString() : new URL(`/${normalized}`, projectPreviewUrl).toString();
     })
     .filter((route) => !!route);
