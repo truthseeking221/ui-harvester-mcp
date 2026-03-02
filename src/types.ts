@@ -427,6 +427,7 @@ export type ValidationItem = {
   targetViewport?: string;
   sourceState?: string;
   targetState?: string;
+  warnings?: string[];
 };
 
 export type ValidationReport = {

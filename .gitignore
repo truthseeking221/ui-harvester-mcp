@@ -3,3 +3,4 @@ dist
 .design-extractor
 *.log
 .DS_Store
+.claude/

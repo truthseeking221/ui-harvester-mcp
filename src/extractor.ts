@@ -2364,7 +2364,7 @@ async function gatherSamples(
         const style = getComputedStyle(node);
         const visible = rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.visibility !== "collapse" && style.opacity !== "0";
         const sample = {
-          uid: `${node.tagName.toLowerCase()}-${routeToken}-${Math.round(rect.x)}-${Math.round(rect.y)}-${Math.round(rect.width)}-${Math.round(rect.height)}-${i}`,
+          uid: `${node.tagName.toLowerCase()}-${Math.round(rect.x)}-${Math.round(rect.y)}-${Math.round(rect.width)}-${Math.round(rect.height)}-${i}`,
           selector: buildSelector(node),
           tag: node.tagName.toLowerCase(),
           role: node.getAttribute("role"),
@@ -4185,7 +4185,6 @@ async function makeRouteCapture(
     routeDepth,
   });
   const targets = await listInteractiveTargets(page);
-  const effectiveStateCaptureBudget = shouldThrottleStateCapture ? 0 : stateCaptureBudget;
   const capped = targets.slice(0, Math.max(0, effectiveStateCaptureBudget));
   const stateSequence = SUPPORTED_INTERACTION_STATES.slice(0, Math.max(0, shouldThrottleStateCapture ? 0 : stateBudget));
   const routeStateWarningBudget = Math.max(1, Math.min(20, stateCaptureBudget));
@@ -4961,13 +4960,13 @@ export async function crawlAndCapture(input: ExtractDesignSystemInput): Promise<
             seenFingerprints.add(capture.routeFingerprint || `${capture.layoutFingerprint}-${route}-${viewport.width}x${viewport.height}-${theme}`);
             captures.push(capture);
             routeSummary.rendered += 1;
-            routeSummary.renderedByTheme[theme] = (routeSummary.renderedByTheme[theme] || 0) + 1;
+            routeSummary.renderedByTheme![theme] = (routeSummary.renderedByTheme![theme] || 0) + 1;
             const viewportKey = `${viewport.width}x${viewport.height}`;
-            routeSummary.renderedByViewport[viewportKey] = (routeSummary.renderedByViewport[viewportKey] || 0) + 1;
-            routeSummary.renderedByStatus.default += 1;
+            routeSummary.renderedByViewport![viewportKey] = (routeSummary.renderedByViewport![viewportKey] || 0) + 1;
+            routeSummary.renderedByStatus!.default += 1;
             if (capture.stateWarnings?.length) {
               routeSummary.unstableSettling += 1;
-              routeSummary.renderedByStatus.unstable += 1;
+              routeSummary.renderedByStatus!.unstable += 1;
               routeSummary.warnings?.push(`unstable route=${route} theme=${theme} viewport=${viewport.name}`);
             }
 
@@ -4994,10 +4993,9 @@ export async function crawlAndCapture(input: ExtractDesignSystemInput): Promise<
               }
             }
           } catch (error) {
-            routeSummary.renderedByStatus.failed += 1;
+            routeSummary.renderedByStatus!.failed += 1;
             routeSummary.warnings?.push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name}`);
-            (routeSummary.warnings ??= []).push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name} ${String(error)}`);
-          }
+            routeSummary.warnings?.push(`capture-failed route=${route} theme=${theme} viewport=${viewport.name} ${String(error)}`);
           } finally {
             await context.close();
           }

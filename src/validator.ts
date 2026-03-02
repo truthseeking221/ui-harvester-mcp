@@ -4,7 +4,7 @@ import { chromium, type Page } from "playwright";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
 import { readSnapshot, snapshotDir } from "./storage.js";
-import { InteractionState, ValidateInput, ValidationItem, ValidationReport, StateCapture } from "./types.js";
+import { InteractionState, RouteViewportCapture, ValidateInput, ValidationItem, ValidationReport, StateCapture } from "./types.js";
 
 type ViewportFilter = { name: string; width: number; height: number };
 
@@ -177,7 +177,7 @@ async function resolveTargetLocator(page: Page, sourceState?: ValidationStateCap
 
     if (candidate.type === "bbox") {
       const selectorFromBBox = await page
-        .evaluate<string | null>((value) => {
+        .evaluate<string | null, string>((value) => {
           let bbox: { x: number; y: number; width: number; height: number };
           try {
             bbox = JSON.parse(value) as { x: number; y: number; width: number; height: number };
@@ -452,7 +452,7 @@ export async function validateVisualMatch(args: ValidateInput): Promise<Validati
   const routesToCheck = routeCandidates(args, args.projectPreviewUrl);
   const viewportFiltered = allCapturedRoutes.filter((page) => viewportAllows(page, args.viewports));
 
-  const sourcePages: ReturnType<typeof viewportFiltered> = [];
+  const sourcePages: RouteViewportCapture[] = [];
   if (!routesToCheck.length) {
     sourcePages.push(...viewportFiltered);
   } else {

@@ -209,6 +209,6 @@ describe("exporters", () => {
     expect(JSON.parse(exportDesignTokens(snapshot, "theme-object")).tokens.colors["blue-500"]).toBe("#2563eb");
     expect(JSON.parse(exportDesignTokens(snapshot, "dtcg-json")).$schema).toBe("https://tr.designtokens.org/TR/2025.10");
     expect(exportDesignTokens(snapshot, "universal-package")).toContain('"universal/manifest.json"');
-    expect(exportDesignTokens(snapshot, "figma-variables")).toContain('"schema": "ui-harvester/figma-variables/1.0"');
+    expect(exportDesignTokens(snapshot, "figma-variables")).toContain('"schema": "ui-harvester/figma-variables/1.1"');
   });
 });
