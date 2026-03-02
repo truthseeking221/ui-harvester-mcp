@@ -5,14 +5,12 @@ import {
   BreakpointToken,
   ComponentRecipe,
   ComponentVariantState,
-  DesignToken,
   DesignTokenBucket,
   ExtractDesignSystemInput,
   CleaningProfile,
   InteractionState,
   NodeComputedStyle,
   NodeSample,
-  StateCaptureTargetMeta,
   StateCapture,
   RouteViewportCapture,
   RouteCrawlSummary,
@@ -28,11 +26,6 @@ import {
   WaitConfig,
 } from './types.js';
 import { captureId, ensureSnapshot, screenshotPath, writeBinaryFile, writeJsonFile } from './storage.js';
-
-type LocatorAttempt = {
-  strategy: string;
-  selector: string;
-};
 
 type InteractiveTarget = {
   uid: string;
@@ -89,8 +82,6 @@ type StableResult = {
   unchangedFrames: number;
   unstableFrames: number;
 };
-
-const LOADING_ERROR_STATES = ['loading', 'error'] as const;
 
 function safeToFixed(value: number | null | undefined, digits = 3): string {
   if (!Number.isFinite(value as number)) return '0';
@@ -186,7 +177,6 @@ const SUPPORTED_INTERACTION_STATES: InteractionState[] = [
   'error',
 ];
 
-const CHECKABLE_TYPES = new Set(['checkbox', 'radio', 'switch']);
 const STATE_SUPPORT: Partial<Record<InteractionState, ReadonlySet<string>>> = {
   checked: new Set(['input', 'label', 'button', 'summary', 'checkbox', 'radio', 'switch']),
   selected: new Set(['option', 'tab', 'menuitem', 'checkbox', 'radio', 'switch', 'row']),
@@ -486,20 +476,6 @@ function roundLengthForProfile(value: number | null, profile: CleaningProfile): 
   );
 }
 
-function stateDeltaFingerprint(stateCapture: ComponentStateCaptureInput): string {
-  const changed = [...new Set(stateCapture.changedProperties || [])].sort().join(',');
-  const added = [...new Set(stateCapture.changedPropertiesAdded || [])].sort().join(',');
-  const removed = [...new Set(stateCapture.changedPropertiesRemoved || [])].sort().join(',');
-  const deltas = Object.keys(stateCapture.propertyDeltas || {})
-    .sort()
-    .map((key) => {
-      const delta = stateCapture.propertyDeltas?.[key] || { before: '', after: '' };
-      return `${key}:${delta.before}->${delta.after}`;
-    })
-    .join(';');
-  return `${stateCapture.state}|${stateCapture.styleSignature || ''}|${changed}|${added}|${removed}|${deltas}`;
-}
-
 function stateKeyFromVariant(state: ComponentVariantState): string {
   const changed = [...new Set(state.changedProperties || [])].sort().join(',');
   const added = [...new Set(state.changedPropertiesAdded || [])].sort().join(',');
@@ -512,12 +488,6 @@ function stateKeyFromVariant(state: ComponentVariantState): string {
     })
     .join('|');
   return `${state.state}|${state.styleSignature || ''}|${changed}|${added}|${removed}|${deltas}`;
-}
-
-function toCanonicalRadiusPxValue(value: string, profile: CleaningProfile): number | null {
-  const numeric = parseLengthForProfile(value, profile);
-  if (numeric === null) return null;
-  return roundLengthForProfile(numeric, profile);
 }
 
 function toCanonicalLengthToken(value: number, profile: CleaningProfile): string {
@@ -565,11 +535,6 @@ function canonicalizeStateTargetMeta(meta?: StateCapture['stateTargetMeta']): st
   if (attempts.length) chunks.push(`attempts=${attempts.join(',')}`);
   return chunks;
 }
-
-type NumericBucket = {
-  count: number;
-  provenance: string[];
-};
 
 type IconContext = 'dom-link' | 'manifest' | 'img' | 'css-inline' | 'css-stylesheet';
 
@@ -642,13 +607,7 @@ function isImageMime(mime?: string | null): boolean {
   return cleaned.startsWith('image/');
 }
 
-function isLikelyIconUrl(
-  rawUrl: string,
-  mime: string | null,
-  context: IconContext,
-  rel?: string,
-  _nameHint?: string
-): boolean {
+function isLikelyIconUrl(rawUrl: string, mime: string | null, context: IconContext, rel?: string): boolean {
   const candidate = rawUrl.toLowerCase().trim();
   const ext = extractExtFromSource(candidate);
   if (ext && ALLOWED_ICON_EXTENSIONS.has(`.${ext}`)) return true;
@@ -1311,7 +1270,7 @@ export async function harvestIconsForRoute(
 
     const likelyIconUrl = candidate.inlineSvg
       ? true
-      : isLikelyIconUrl(candidateUrl, null, candidate.context, candidate.rel, candidate.nameHint);
+      : isLikelyIconUrl(candidateUrl, null, candidate.context, candidate.rel);
     if (!likelyIconUrl && !sourceHint.startsWith('data:image/')) {
       const ext = extHint || 'bin';
       const statusRecord = buildRecord(
@@ -1456,12 +1415,6 @@ function toLowerString(value: string | null | undefined) {
   return (value || '').toLowerCase().trim();
 }
 
-function pickPercentFromParts(raw: string) {
-  const parsed = Number.parseFloat(raw.replace('%', ''));
-  if (!Number.isFinite(parsed)) return null;
-  return parsed / 100;
-}
-
 const NAMED_COLOR_HEX = new Map<string, string>([
   ['black', '#000000'],
   ['white', '#ffffff'],
@@ -1479,10 +1432,6 @@ const NAMED_COLOR_HEX = new Map<string, string>([
   ['purple', '#800080'],
   ['orange', '#ffa500'],
 ]);
-
-function toCanonicalHex(value: number) {
-  return clampByte(value).toString(16).padStart(2, '0');
-}
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
@@ -1606,16 +1555,6 @@ function normalizePxNumericOnly(value: string): number | null {
   return numeric;
 }
 
-function normalizePxNumericOrZero(value: string): number | null {
-  const canonical = toCanonicalLength(value);
-  if (!canonical) return null;
-  const pxMatch = canonical.match(/-?\d*\.?\d+(?=px)/);
-  if (!pxMatch) return null;
-  const numeric = Number.parseFloat(pxMatch[0]);
-  if (!Number.isFinite(numeric)) return null;
-  return numeric;
-}
-
 function normalizePx(value: string, profile: CleaningProfile = DEFAULT_CLEANING_PROFILE): string {
   if (typeof value !== 'string') return '';
   const canonical = toCanonicalLength(value);
@@ -1686,26 +1625,6 @@ function normalizePxOrRawLength(value: string): string {
   const canonical = toCanonicalLength(value);
   if (!canonical) return '';
   return canonical;
-}
-
-function normalizePxDisplay(value: string): string | null {
-  return toCanonicalLength(value);
-}
-
-function parseLengthOrNumber(raw: string): number | null {
-  const canonical = toCanonicalLength(raw);
-  if (!canonical) return null;
-  const pxMatch = canonical.match(/-?\d*\.?\d+/);
-  if (!pxMatch) return null;
-  const parsed = Number.parseFloat(pxMatch[0]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeLineHeightOrFontSize(
-  style: NodeComputedStyle,
-  field: 'lineHeight' | 'fontSize' | 'letterSpacing'
-): string {
-  return normalizePxDisplay(style[field] || '') || '';
 }
 
 function normalizeLengthForSignature(value: string): string | null {
@@ -1802,15 +1721,6 @@ function normalizeLengthForSignature(value: string): string | null {
   if (normalized.startsWith('max(') || normalized.startsWith('min(') || normalized.startsWith('clamp('))
     return normalized;
   return `${normalized};raw`;
-}
-
-function normalizeColor(input: string): string {
-  const value = toLowerString(input);
-  if (!value) return '';
-  const normalized = normalizeColorValue(value, 'minimal');
-  if (normalized) return normalized;
-  if (value === 'currentColor'.toLowerCase()) return '';
-  return value;
 }
 
 function normalizeStyleValueForSignature(
@@ -2007,7 +1917,7 @@ function normalizeShadowValue(value: string, profile: CleaningProfile): string {
   return filtered.join(', ');
 }
 
-function normalizeRadiusValue(value: string, profile: CleaningProfile): string {
+function normalizeRadiusValue(value: string, _profile: CleaningProfile): string {
   const canonical = toCanonicalLength(value) || '';
   if (!canonical || canonical === 'gradient') return '';
   const parts = canonical
@@ -2598,23 +2508,6 @@ function changedPropertiesFromSignatures(before?: string | null, after?: string 
   return { changed: [...changed].sort(), added: [...added].sort(), removed: [...removed].sort() };
 }
 
-function resolveStateCaptureSource(
-  capture: { state: InteractionState; stateTargetMeta?: StateCaptureTargetMeta },
-  route: string,
-  viewport: ViewportSpec,
-  theme: ThemeMode,
-  screenshot?: string
-): ComponentVariantState['source'] {
-  return {
-    route,
-    viewport: `${viewport.width}x${viewport.height}`,
-    theme,
-    selector: capture.stateTargetMeta?.selector,
-    locator: capture.stateTargetMeta?.locator,
-    screenshot,
-  };
-}
-
 function signatureValueDeltas(before: string, after: string) {
   const beforeMap = signatureToMap(before || '');
   const afterMap = signatureToMap(after || '');
@@ -2673,13 +2566,12 @@ async function gatherSamples(
   maxSamples: number,
   sampleStride: number,
   profileContext: CleaningProfileCtx,
-  sampleContext: {
+  _sampleContext: {
     route?: string;
     viewport?: string;
     theme?: ThemeMode;
   } = {}
 ): Promise<GatheredSamples> {
-  const contextToken = `${sampleContext.route || 'route'}|${sampleContext.viewport || 'viewport'}|${sampleContext.theme || 'theme'}`;
   const rawSamples: any[] = await page.evaluate(
     ({ maxSamples, sampleStride }) => {
       const nodes = Array.from(document.querySelectorAll('*')).filter((node) => node instanceof Element) as Element[];
@@ -2879,7 +2771,7 @@ function buildDescriptorSelectorCandidates(target: InteractiveTarget): string[] 
     candidates.add(`${target.tag}.${escaped.slice(0, 2).join('.')}`);
   }
   if (target.text && target.text.length > 0) {
-    const sanitizedText = target.text.slice(0, 90).replace(/[\"']/g, '');
+    const sanitizedText = target.text.slice(0, 90).replace(/["']/g, '');
     candidates.add(`text:${sanitizedText}`);
   }
   if (target.tag) {
@@ -2904,19 +2796,7 @@ function buildDescriptorSelectorCandidates(target: InteractiveTarget): string[] 
   return [...candidates];
 }
 
-function toTargetAttemptsText(target: InteractiveTarget, state?: InteractionState) {
-  return [
-    `tag=${target.tag}`,
-    target.role ? `role=${target.role}` : '',
-    target.type ? `type=${target.type}` : '',
-    target.id ? `id=${target.id}` : '',
-    `state=${state || 'default'}`,
-  ]
-    .filter(Boolean)
-    .join('|');
-}
-
-function resolveLocatorFromStrategy(
+async function resolveLocatorFromStrategy(
   page: Page,
   selector: string,
   strategy: string
@@ -2925,138 +2805,132 @@ function resolveLocatorFromStrategy(
   const normalizedBbox = selector?.startsWith('bbox:') ? selector : '';
   const candidate: string = selector;
 
-  return new Promise(async (resolve) => {
-    try {
-      if (strategy === 'role-text' && normalizedText) {
-        const at = selector.replace(/^role-text:/, '');
-        const [rolePart, textPart] = at.split('|', 2);
-        const normalizedRole = rolePart?.replace(/^role=/, '').toLowerCase();
-        const normalizedInputText = decodeURIComponent(textPart || '').toLowerCase();
-        if (!normalizedRole || !normalizedInputText) return resolve(null);
-        const matchedByRole = Array.from(
-          document.querySelectorAll(`*[role='${normalizedRole}'], [role='${normalizedRole}']`)
-        ) as Element[];
-        if (!matchedByRole.length) return resolve(null);
-        const withText = matchedByRole
-          .map((node) => ({
-            node,
-            text: (node.textContent || '').toLowerCase(),
-          }))
-          .find((entry) => entry.text.includes(normalizedInputText));
-        if (!withText) return resolve(null);
-        const selectedNode = withText.node;
-        const snapshot =
-          selectedNode instanceof Element
-            ? selectedNode.id
-              ? `${selectedNode.tagName.toLowerCase()}#${CSS.escape(selectedNode.id)}`
-              : (() => {
-                  const classes = (selectedNode.getAttribute('class') || '')
-                    .trim()
-                    .split(/\s+/)
-                    .filter(Boolean)
-                    .slice(0, 2)
-                    .map((token) => `.${CSS.escape(token)}`)
-                    .join('');
-                  return classes
-                    ? `${selectedNode.tagName.toLowerCase()}${classes}`
-                    : selectedNode.tagName.toLowerCase();
-                })()
-            : '';
-        return resolve({
-          found: true,
-          locator: snapshot,
-          attempts: ['role-text'],
-          confidence: 0.74,
-        });
-      }
-
-      if (strategy === 'text' && normalizedText) {
-        const matched = page.getByText(normalizedText, { exact: false });
-        const count = await matched.count().catch(() => 0);
-        if (!count) return resolve(null);
-        const locator = matched.first();
-        const visible = await locator.isVisible().catch(() => false);
-        if (!visible) return resolve(null);
-        const snapshot = await locator
-          .evaluate((node) => {
-            if (!(node instanceof Element)) return '';
-            if (node.id) return `${node.tagName.toLowerCase()}#${CSS.escape(node.id)}`;
-            const classes = (node.getAttribute('class') || '')
-              .trim()
-              .split(/\s+/)
-              .filter(Boolean)
-              .slice(0, 2)
-              .map((token) => `.${CSS.escape(token)}`)
-              .join('');
-            return classes ? `${node.tagName.toLowerCase()}${classes}` : node.tagName.toLowerCase();
-          })
-          .catch(() => '');
-        return resolve({
-          found: true,
-          locator: snapshot || candidate,
-          attempts: ['text'],
-          confidence: normalizedText ? 0.68 : 0.4,
-        });
-      }
-
-      if (strategy === 'bbox' && normalizedBbox) {
-        const coords = normalizedBbox.replace(/^bbox:/, '');
-        const [x, y] = coords.split(',').map((value) => Number.parseFloat(value));
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return resolve(null);
-        const foundLocator = await page
-          .evaluate(
-            (point) => {
-              const candidates = Array.from(
-                document.querySelectorAll(
-                  "a,button,input,textarea,select,summary,[role='button'],[role='link'],[role='tab'],[role='menuitem'],[role='combobox'],[role='listbox'],[role='checkbox'],[role='radio'],[role='switch'],[role='list'],[role='navigation'],[role='menu'],[role='textbox'],[role='slider'],[role='search'],[role='toolbar'],[role='tabpanel'],[role='dialog'],details,summary,option,li"
-                )
-              ) as Element[];
-              if (!candidates.length) return '';
-              let best = candidates[0];
-              let bestDistance = Number.POSITIVE_INFINITY;
-              for (const candidate of candidates) {
-                const rect = candidate.getBoundingClientRect();
-                const cx = rect.x + rect.width / 2;
-                const cy = rect.y + rect.height / 2;
-                const distance = Math.hypot(cx - point.x, cy - point.y);
-                if (distance < bestDistance) {
-                  bestDistance = distance;
-                  best = candidate;
-                }
-              }
-              const tag = best.tagName.toLowerCase();
-              if (best.id) return `${tag}#${CSS.escape(best.id)}`;
-              const classes = (best.getAttribute('class') || '').split(/\s+/).filter(Boolean).slice(0, 2);
-              return classes.length ? `${tag}.${classes.map((token) => CSS.escape(token)).join('.')}` : tag;
-            },
-            { x, y }
-          )
-          .catch(() => '');
-        if (!foundLocator) return resolve(null);
-        return resolve({ found: true, locator: foundLocator, attempts: ['bbox'], confidence: 0.55 });
-      }
-
-      const locator = page.locator(candidate).first();
-      const count = await locator.count().catch(() => 0);
-      if (!count) return resolve(null);
-      const visible = await locator.isVisible().catch(async () => {
-        const c = await locator.count().catch(() => 0);
-        if (!c) return false;
-        return locator
-          .evaluate((node) => node instanceof Element && node.getClientRects().length > 0)
-          .catch(() => false);
-      });
-      if (!visible) return resolve(null);
-      return resolve({
+  try {
+    if (strategy === 'role-text' && normalizedText) {
+      const at = selector.replace(/^role-text:/, '');
+      const [rolePart, textPart] = at.split('|', 2);
+      const normalizedRole = rolePart?.replace(/^role=/, '').toLowerCase();
+      const normalizedInputText = decodeURIComponent(textPart || '').toLowerCase();
+      if (!normalizedRole || !normalizedInputText) return null;
+      const matchedByRole = Array.from(
+        document.querySelectorAll(`*[role='${normalizedRole}'], [role='${normalizedRole}']`)
+      ) as Element[];
+      if (!matchedByRole.length) return null;
+      const withText = matchedByRole
+        .map((node) => ({
+          node,
+          text: (node.textContent || '').toLowerCase(),
+        }))
+        .find((entry) => entry.text.includes(normalizedInputText));
+      if (!withText) return null;
+      const selectedNode = withText.node;
+      const snapshot =
+        selectedNode instanceof Element
+          ? selectedNode.id
+            ? `${selectedNode.tagName.toLowerCase()}#${CSS.escape(selectedNode.id)}`
+            : (() => {
+                const classes = (selectedNode.getAttribute('class') || '')
+                  .trim()
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((token) => `.${CSS.escape(token)}`)
+                  .join('');
+                return classes ? `${selectedNode.tagName.toLowerCase()}${classes}` : selectedNode.tagName.toLowerCase();
+              })()
+          : '';
+      return {
         found: true,
-        locator: candidate,
-        attempts: [strategy],
-        confidence: strategy === 'selector' ? 0.88 : 0.55,
-      });
-    } catch {
-      return resolve(null);
+        locator: snapshot,
+        attempts: ['role-text'],
+        confidence: 0.74,
+      };
     }
-  });
+
+    if (strategy === 'text' && normalizedText) {
+      const matched = page.getByText(normalizedText, { exact: false });
+      const count = await matched.count().catch(() => 0);
+      if (!count) return null;
+      const locator = matched.first();
+      const visible = await locator.isVisible().catch(() => false);
+      if (!visible) return null;
+      const snapshot = await locator
+        .evaluate((node) => {
+          if (!(node instanceof Element)) return '';
+          if (node.id) return `${node.tagName.toLowerCase()}#${CSS.escape(node.id)}`;
+          const classes = (node.getAttribute('class') || '')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((token) => `.${CSS.escape(token)}`)
+            .join('');
+          return classes ? `${node.tagName.toLowerCase()}${classes}` : node.tagName.toLowerCase();
+        })
+        .catch(() => '');
+      return {
+        found: true,
+        locator: snapshot || candidate,
+        attempts: ['text'],
+        confidence: normalizedText ? 0.68 : 0.4,
+      };
+    }
+
+    if (strategy === 'bbox' && normalizedBbox) {
+      const coords = normalizedBbox.replace(/^bbox:/, '');
+      const [x, y] = coords.split(',').map((value) => Number.parseFloat(value));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      const foundLocator = await page
+        .evaluate(
+          (point) => {
+            const candidates = Array.from(
+              document.querySelectorAll(
+                "a,button,input,textarea,select,summary,[role='button'],[role='link'],[role='tab'],[role='menuitem'],[role='combobox'],[role='listbox'],[role='checkbox'],[role='radio'],[role='switch'],[role='list'],[role='navigation'],[role='menu'],[role='textbox'],[role='slider'],[role='search'],[role='toolbar'],[role='tabpanel'],[role='dialog'],details,summary,option,li"
+              )
+            ) as Element[];
+            if (!candidates.length) return '';
+            let best = candidates[0];
+            let bestDistance = Number.POSITIVE_INFINITY;
+            for (const candidate of candidates) {
+              const rect = candidate.getBoundingClientRect();
+              const cx = rect.x + rect.width / 2;
+              const cy = rect.y + rect.height / 2;
+              const distance = Math.hypot(cx - point.x, cy - point.y);
+              if (distance < bestDistance) {
+                bestDistance = distance;
+                best = candidate;
+              }
+            }
+            const tag = best.tagName.toLowerCase();
+            if (best.id) return `${tag}#${CSS.escape(best.id)}`;
+            const classes = (best.getAttribute('class') || '').split(/\s+/).filter(Boolean).slice(0, 2);
+            return classes.length ? `${tag}.${classes.map((token) => CSS.escape(token)).join('.')}` : tag;
+          },
+          { x, y }
+        )
+        .catch(() => '');
+      if (!foundLocator) return null;
+      return { found: true, locator: foundLocator, attempts: ['bbox'], confidence: 0.55 };
+    }
+
+    const locator = page.locator(candidate).first();
+    const count = await locator.count().catch(() => 0);
+    if (!count) return null;
+    const visible = await locator.isVisible().catch(async () => {
+      const c = await locator.count().catch(() => 0);
+      if (!c) return false;
+      return locator.evaluate((node) => node instanceof Element && node.getClientRects().length > 0).catch(() => false);
+    });
+    if (!visible) return null;
+    return {
+      found: true,
+      locator: candidate,
+      attempts: [strategy],
+      confidence: strategy === 'selector' ? 0.88 : 0.55,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function resolveStyleSignatureByLocator(
@@ -3169,7 +3043,6 @@ async function resolveStyleSignatureByLocator(
   }
 
   if (!target.found && target.target.tag && target.target.bbox) {
-    const selector = `bbox:${Math.round(target.target.bbox.x)},${Math.round(target.target.bbox.y)}`;
     const style = await page
       .evaluate(
         (selectorFallback) => {
@@ -3285,9 +3158,9 @@ async function listInteractiveTargets(page: Page): Promise<InteractiveTarget[]> 
 async function resolveInteractiveTarget(
   page: Page,
   target: InteractiveTarget,
-  route: string,
-  viewport: ViewportSpec,
-  state?: InteractionState
+  _route: string,
+  _viewport: ViewportSpec,
+  _state?: InteractionState
 ): Promise<ResolvedInteractiveTarget> {
   const attempts: string[] = [];
   const cleanText = toLowerString(target.text || '').slice(0, 120);
@@ -3657,69 +3530,6 @@ async function resolveInteractiveTarget(
   };
 }
 
-async function nodeStyleSignatureBySelector(
-  page: Page,
-  selector: string,
-  profile: CleaningProfile = DEFAULT_CLEANING_PROFILE
-): Promise<string | null> {
-  const raw = await page.evaluate((sel) => {
-    const element = document.querySelector(sel) as Element | null;
-    if (!element) return null;
-    const style = getComputedStyle(element);
-    return {
-      display: style.display,
-      position: style.position,
-      top: style.top,
-      right: style.right,
-      bottom: style.bottom,
-      left: style.left,
-      zIndex: style.zIndex,
-      overflow: style.overflow,
-      boxSizing: style.boxSizing,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      borderColor: style.borderTopColor,
-      borderWidth: style.borderTopWidth,
-      borderStyle: style.borderTopStyle,
-      borderRadius: style.borderTopLeftRadius,
-      fontFamily: style.fontFamily,
-      fontSize: style.fontSize,
-      paddingTop: style.paddingTop,
-      paddingRight: style.paddingRight,
-      paddingBottom: style.paddingBottom,
-      paddingLeft: style.paddingLeft,
-      marginTop: style.marginTop,
-      marginRight: style.marginRight,
-      marginBottom: style.marginBottom,
-      marginLeft: style.marginLeft,
-      gap: style.gap,
-      boxShadow: style.boxShadow,
-      textShadow: style.textShadow,
-      width: style.width,
-      height: style.height,
-      minWidth: style.minWidth,
-      minHeight: style.minHeight,
-      maxWidth: style.maxWidth,
-      maxHeight: style.maxHeight,
-      fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
-      letterSpacing: style.letterSpacing,
-      textAlign: style.textAlign,
-      textTransform: style.textTransform,
-      opacity: style.opacity,
-      transition: style.transition,
-      animation: style.animation,
-      outline: style.outline,
-      outlineColor: style.outlineColor,
-      outlineWidth: style.outlineWidth,
-      filter: style.filter,
-      backdropFilter: style.backdropFilter,
-    } as Record<string, string>;
-  }, selector);
-  if (!raw) return null;
-  return signatureFromStyles(toCssNodeStyle(raw, profile));
-}
-
 async function applyInteractionState(
   page: Page,
   state: InteractionState,
@@ -3904,7 +3714,7 @@ async function applyInteractionState(
       await locator.dispatchEvent('mouseup').catch(() => {});
       probe.stateApplied = true;
       break;
-    case 'checked':
+    case 'checked': {
       if (
         !stateCapable ||
         !supportsChecked ||
@@ -3933,6 +3743,7 @@ async function applyInteractionState(
         probe.stateApplied = true;
       }
       break;
+    }
     case 'selected':
       if (!stateCapable || !supportsSelected) {
         if (!supportsSelected) warnings.push('selected_not_applicable');
@@ -3954,7 +3765,7 @@ async function applyInteractionState(
         probe.stateApplied = true;
       }
       break;
-    case 'open':
+    case 'open': {
       if (!stateCapable || !hasOpenTarget) {
         warnings.push('open_not_applicable');
         probe.supported = false;
@@ -4027,7 +3838,8 @@ async function applyInteractionState(
       }
       probe.stateApplied = true;
       break;
-    case 'disabled':
+    }
+    case 'disabled': {
       if (!stateCapable) {
         warnings.push('disabled_not_applicable');
         probe.supported = false;
@@ -4194,7 +4006,9 @@ async function applyInteractionState(
               hadCursor: simulated.hadCursor,
             }
           );
-        } catch {}
+        } catch {
+          /* intentionally empty */
+        }
       };
       const postProbe = await locator
         .evaluate(
@@ -4232,8 +4046,8 @@ async function applyInteractionState(
       warnings.push('disabled_state_simulated');
       probe.stateApplied = true;
       break;
-      break;
-    case 'loading':
+    }
+    case 'loading': {
       if (!stateCapable) {
         warnings.push('loading_not_applicable');
         probe.supported = false;
@@ -4299,7 +4113,8 @@ async function applyInteractionState(
         probe.supported = false;
       }
       break;
-    case 'error':
+    }
+    case 'error': {
       if (!stateCapable) {
         warnings.push('error_not_applicable');
         probe.supported = false;
@@ -4349,6 +4164,7 @@ async function applyInteractionState(
       }
       probe.stateApplied = true;
       break;
+    }
     default:
       break;
   }
@@ -4362,10 +4178,6 @@ async function applyInteractionState(
     probe,
     restore: captureDisabledRestore.fn,
   };
-}
-
-function buildComponentRecipe(groups: Record<string, NodeSample[]>): Record<string, ComponentRecipe> {
-  return buildComponentRecipeWithState(groups);
 }
 
 export function buildComponentRecipeWithState(

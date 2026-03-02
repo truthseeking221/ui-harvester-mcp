@@ -219,7 +219,12 @@ export function captureId(
   state: string,
   suffix = ''
 ) {
-  const parsed = new URL(routeUrl);
+  let parsed: URL;
+  try {
+    parsed = new URL(routeUrl);
+  } catch {
+    parsed = new URL(routeUrl, 'http://localhost');
+  }
   const routeKey = toSafeSegment((parsed.pathname || 'home') + (parsed.search || ''));
   const viewKey = parseViewportString(`${viewport.name}-${viewport.width}x${viewport.height}`);
   return toSafeSegment(`${routeKey}_${viewKey}_${theme}_${state}${suffix ? `_${suffix}` : ''}`);

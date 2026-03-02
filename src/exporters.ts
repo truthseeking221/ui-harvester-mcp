@@ -117,8 +117,9 @@ export function exportCssVariables(snapshot: UiSnapshotManifest): string {
   });
 
   snapshot.tokens.core.fontFamilies.forEach((font) => {
-    lines.push(`  --font-${slug(font.name)}: ${JSON.stringify(stringifyFont(font.stack))};`);
-    lines.push(`  --font-weight-${slug(font.name)}: ${font.weight || '400'};`);
+    const alias = slug(font.name) || 'sans';
+    lines.push(`  --font-${alias}: ${JSON.stringify(stringifyFont(font.stack))};`);
+    lines.push(`  --font-weight-${alias}: ${font.weight || '400'};`);
   });
 
   lines.push('}');
@@ -1212,10 +1213,10 @@ export function exportThemeObject(snapshot: UiSnapshotManifest, targetStack: Sna
         h3: textStyleToTheme(textStyles[2]),
         body1: textStyleToTheme(textStyles[3]),
         body2: textStyleToTheme(textStyles[4]),
-        button: textStyleToTheme(textStyles[0]),
+        button: textStyleToTheme(textStyles[Math.min(4, textStyles.length - 1)]),
       },
       shape: {
-        borderRadius: snapshot.tokens.core.radii[0] || '8px',
+        borderRadius: snapshot.tokens.core.radii[2] || snapshot.tokens.core.radii[1] || '8px',
       },
       shadows: snapshot.tokens.core.shadows.slice(0, 12).map((entry) => entry.value),
       spacing: 4,

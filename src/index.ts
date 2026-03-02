@@ -457,10 +457,14 @@ server.tool(
   async ({ snapshotId, projectPath, targetStack, createFilesOnly }) => {
     try {
       const snapshot = await readSnapshot(snapshotId);
-      const base = path.resolve(projectPath);
-      if (base.includes('..') || !path.isAbsolute(base)) {
-        return toolError(new Error('projectPath must resolve to a safe absolute path'));
+      if (projectPath.includes('..') || projectPath.startsWith('/')) {
+        const base = path.resolve(projectPath);
+        const cwd = process.cwd();
+        if (!base.startsWith(cwd + path.sep) && base !== cwd) {
+          return toolError(new Error('projectPath must be within the current working directory'));
+        }
       }
+      const base = path.resolve(projectPath);
       const styleDir = path.join(base, 'src', 'styles');
       await fs.mkdir(styleDir, { recursive: true });
       const input = (targetStack as SnapshotTargetStack) || 'vite-tailwind';

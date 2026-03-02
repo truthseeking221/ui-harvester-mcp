@@ -422,7 +422,13 @@ async function captureValidationShot(
   const targetPath = path.join(snapshotDir(snapshotId), 'validation', 'shots');
   await fs.mkdir(targetPath, { recursive: true });
   const screenshotPath = path.join(targetPath, `${captureId}-${state}.png`);
-  const targetUrl = new URL(targetRoute, projectPreviewUrl).toString();
+  let targetUrl: string;
+  try {
+    const parsed = new URL(targetRoute);
+    targetUrl = new URL(parsed.pathname + parsed.search + parsed.hash, projectPreviewUrl).toString();
+  } catch {
+    targetUrl = new URL(targetRoute, projectPreviewUrl).toString();
+  }
 
   try {
     await page.goto(targetUrl, { timeout: 90_000, waitUntil: 'domcontentloaded' }).catch(async () => {
@@ -590,7 +596,10 @@ export async function validateVisualMatch(args: ValidateInput): Promise<Validati
           !useFallbackState
         );
 
-        const sourceBuffer = await fs.readFile(sourceCapture.screenshot).catch(() => null);
+        const screenshotFile = path.isAbsolute(sourceCapture.screenshot)
+          ? sourceCapture.screenshot
+          : path.join(snapshotDir(snapshot.snapshotId), sourceCapture.screenshot);
+        const sourceBuffer = await fs.readFile(screenshotFile).catch(() => null);
         if (!sourceBuffer) {
           reportItems.push({
             route: sourcePage.route,
