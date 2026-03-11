@@ -97,7 +97,7 @@ export function exportCssVariables(snapshot: UiSnapshotManifest): string {
   lines.push('  --surface-card: ' + (snapshot.tokens.semantic.surface.card || '#f9fafb') + ';');
 
   snapshot.tokens.core.spacing.slice(0, 80).forEach((value, index) => {
-    const key = index === 0 ? '0' : String(index + 1);
+    const key = String(index);
     lines.push(`  --spacing-${key}: ${value}px;`);
   });
 
@@ -146,7 +146,7 @@ export function exportTailwindV4Theme(snapshot: UiSnapshotManifest): string {
   });
 
   snapshot.tokens.core.spacing.slice(0, 64).forEach((value, idx) => {
-    const key = idx === 0 ? '0' : idx === 1 ? '1' : String(idx + 1);
+    const key = String(idx);
     out.push(`  --spacing-${key}: ${value}px;`);
   });
 
@@ -1213,7 +1213,7 @@ export function exportThemeObject(snapshot: UiSnapshotManifest, targetStack: Sna
         h3: textStyleToTheme(textStyles[2]),
         body1: textStyleToTheme(textStyles[3]),
         body2: textStyleToTheme(textStyles[4]),
-        button: textStyleToTheme(textStyles[Math.min(4, textStyles.length - 1)]),
+        button: textStyleToTheme(textStyles[5] ?? textStyles[3]),
       },
       shape: {
         borderRadius: snapshot.tokens.core.radii[2] || snapshot.tokens.core.radii[1] || '8px',
